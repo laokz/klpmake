@@ -38,7 +38,7 @@ klpmake
 
 ### 示例
 
-见[example](exaple/readme.md)。
+见[example](example/readme.md)。
 
 ### 局限
 
