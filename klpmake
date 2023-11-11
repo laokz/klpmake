@@ -1,0 +1,121 @@
+#!/bin/bash
+#
+# KLPMAKE is a linux kernel livepatch making tool.
+#
+# Environment variable:
+#   KLPMAKE_VMLINUX  targeted kernel vmlinux, must contain debug info
+#
+# Copyright (c) 2023 PLCT lab.  laokz <zhangkai@iscas.ac.cn>
+# KLPMAKE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of
+# the Mulan PSL v2. You may obtain a copy of Mulan PSL v2 at:
+#          http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES
+# OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+# TO NON-INFRINGEMENT, MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+set -e
+LOCALE=C
+VMLINUX=${KLPMAKE_VMLINUX:-/usr/lib/debug/lib/modules/$(uname -r)/vmlinux}
+if [[ ! -e $VMLINUX ]]; then
+	echo "KLPMAKE: not found vmlinux, check KLPMAKE_VMLINUX environment"
+	exit 1
+fi
+KLPMAKE_DIR=$(dirname $0)
+
+echo "KLPMAKE: trying to make partial linked .ko"
+makelog=/tmp/klpmake.make.log
+# Important. We rely on clean make to find all KLPSYMs by now.
+make clean
+set -o pipefail
+KBUILD_MODPOST_WARN=1 make |& tee $makelog
+set +o pipefail
+ko=$(ls *.ko)
+mv -f $ko ${ko}.partial
+echo "KLPMAKE: OK"
+
+# get non-exported globals, non-included locals and their patch source
+declare -a externs
+declare -a statics
+declare -a lsrcs
+while read line; do
+	if [[ "$line" =~ ([^:]+):.*warning:\ ‘(.*)’\ used\ but\ never\ defined ]]; then
+		lsrcs+=(${BASH_REMATCH[1]})
+		statics+=(${BASH_REMATCH[2]})
+	elif [[ "$line" =~ modpost:\ \"(.*)\".*undefined ]]; then
+		externs+=(${BASH_REMATCH[1]})
+	fi
+done <$makelog
+for ((i=0; i<${#externs[@]}; i++)) do
+	for ((j=0; j<${#statics[@]}; j++)) do
+		if [ ${externs[i]} == ${statics[j]} ]; then
+			externs[i]=
+			break
+		fi
+	done
+done
+externs=(${externs[@]})
+
+# Saved SYM POS. If needed, you can edit and run fixklp manually.
+klpsyms=_klpmake.syms
+rm -f $klpsyms
+
+echo "KLPMAKE: verifying non-exported globals in /proc/kallsyms"
+error=false
+for ((i=0; i<${#externs[@]}; i++)) do
+	printf "%-30s" ${externs[i]}
+	tmp=$(grep -E " ${externs[i]}\$" /proc/kallsyms|cut -d' ' -f2)
+	if [[ -z $tmp ]]; then
+		echo "ERROR: not found, check the patch"
+		error=true
+	elif [[ ${#tmp} -gt 1 ]]; then
+		echo "ERROR: found multiple occurrence, check the patch"
+		error=true
+	# not found 'u', 'v', or 'w' types(global) in kallsyms
+	elif [[ $tmp =~ ^[a-z] ]]; then
+		echo "ERROR: type '$tmp' is not a global, check the patch"
+		error=true
+	else
+		# output KLPSYMs for fixklp
+		echo ${externs[i]} 0 >>$klpsyms
+		echo "OK"
+	fi
+done
+
+# get original kernel source from KLPMAKE tag in the patch
+for ((i=0; i<${#lsrcs[@]}; i++)) do
+	tmp=$(grep -E '^[[:blank:]]*//KLPMAKE ' ${lsrcs[i]}|cut -d' ' -f2)
+	if [[ -z $tmp ]]; then
+		echo "KLPMAKE ERROR: not found tag for kernel source in ${lsrcs[i]}"
+		exit 2
+	fi
+	lsrcs[i]=$tmp
+done
+
+echo "KLPMAKE: verifying non-included locals via vmlinux and /proc/kallsyms"
+declare -i pos
+for ((i=0; i<${#statics[@]}; i++)) do
+	printf "%-30s" ${statics[i]}
+
+	if [[ $i == 0 || ${lsrcs[i-1]} != ${lsrcs[i]} ]]; then
+		grepdwarf=$(dwarfdump -u $(basename ${lsrcs[i]}) -d $VMLINUX|grep -E "DW_TAG_compile_unit.*DW_AT_name<${lsrcs[i]}>" || true)
+	fi
+	pos=$($KLPMAKE_DIR/kallsympos ${lsrcs[i]} ${statics[i]} "$grepdwarf")
+
+	if ((pos==-1)); then
+		error=true
+	else
+		# output KLPSYMs for fixklp
+		echo ${statics[i]} $pos >>$klpsyms
+		echo "OK"
+	fi
+done
+if [ $error == "true" ]; then
+	exit 4;
+fi
+
+echo "KLPMAKE: fixing klp module"
+$KLPMAKE_DIR/fixklp ${ko}.partial $klpsyms
+echo "SUCCEED"
+

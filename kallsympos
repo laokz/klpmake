@@ -1,0 +1,120 @@
+#!/bin/bash
+#
+# Kallsympos is part of KLPMAKE. It finds a local "Livepatch Symbol"
+# position via kallsyms and vmlinux DWARF info.
+#
+# Environment variable:
+#   KLPMAKE_VMLINUX  targeted kernel vmlinux, must contain debug info
+#
+# Copyright (c) 2023 PLCT lab.  laokz <zhangkai@iscas.ac.cn>
+# KLPMAKE is licensed under Mulan PSL v2.
+# You can use this software according to the terms and conditions of
+# the Mulan PSL v2. You may obtain a copy of Mulan PSL v2 at:
+#          http://license.coscl.org.cn/MulanPSL2
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES
+# OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+# TO NON-INFRINGEMENT, MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+# See the Mulan PSL v2 for more details.
+
+if (($# < 2)); then
+	echo "Usage: $0 kernel-source local-symbol [dwarf-info]" >&2
+	echo "Find a kernel-source's local symbol position in kallsyms." >&2
+	echo "Source path is relative to the kernel source tree." >&2
+	echo "   0  -- unique symbol" >&2
+	echo "  >0  -- duplicate symbol position is 1-indexed" >&2
+	echo "  -1  -- not found" >&2
+	exit
+fi
+
+set +e
+LOCALE=C
+VMLINUX=${KLPMAKE_VMLINUX:-/usr/lib/debug/lib/modules/$(uname -r)/vmlinux}
+if [[ ! -e $VMLINUX ]]; then
+	echo "ERROR: not found vmlinux, check KLPMAKE_VMLINUX environment" >&2
+	echo -1
+	exit
+fi
+
+src=$1
+symbol=$2
+
+# $1 -- kallsyms lines of one symbol
+# $2 -- its DWARF compile unit start address, string format
+# $3 -- end address, exclude
+# return -- -1 not in range, other 0-indexed line no.
+function compaddr()
+{
+	local -i st en addr count
+	st=$2
+	en=$3
+	count=0
+	while read addrstr tyna; do
+		# kallsyms address has no 0x prefix
+		addr="0x"$addrstr
+		if ((addr>=st && addr<en)); then
+			echo $count
+			return
+		fi
+		count+=1
+	done <<<$1
+	echo -1
+}
+
+# get kernel source - compile unit DWARF info
+IFS=$'\n \t'
+grepkall=$(grep -E " $symbol\$" /proc/kallsyms)
+if [[ -z $grepkall ]]; then
+	echo "ERROR: not found. Maybe inlined or wrong source(tag)?" >&2
+	echo -1
+	exit
+fi
+
+grepdwarf="${3:-$(dwarfdump -u $(basename $src) -d $VMLINUX|grep -E "DW_TAG_compile_unit.*DW_AT_name<$src>")}"
+if [[ -z $grepdwarf ]]; then
+	echo "ERROR: not found $src DWARF info. Wrong source(tag) or module(not supported)?" >&2
+	echo -1
+	exit
+elif (($(wc -l <<<$grepdwarf) > 1)); then
+	echo "ERROR: found multiple $src DWARF info. Wrong source(tag)?" >&2
+	echo -1
+	exit
+fi
+unset IFS
+
+# find memory address range and compare with kallsyms
+# Contiguous Address Range
+declare -i pos
+if [[ $grepdwarf =~ DW_AT_low_pc\<([^\>]+)\>.*\<highpc:([^\>]+)\> ]]; then
+	start=${BASH_REMATCH[1]}
+	end=${BASH_REMATCH[2]}
+	pos=$(compaddr "$grepkall" $start $end)
+# Non-Contiguous Address Ranges
+elif [[ $grepdwarf =~ DW_AT_ranges ]]; then
+	grepdwarf=${grepdwarf#*range entry }
+	while [ "$old" != "$grepdwarf" ]; do
+		[[ $grepdwarf =~ ^([^ ]+)\ ([^>]+) ]]
+		start=${BASH_REMATCH[1]}
+		end=${BASH_REMATCH[2]}
+		pos=$(compaddr "$grepkall" $start $end)
+		if ((pos!=-1)); then
+			break;
+		fi
+		old=$grepdwarf
+		grepdwarf=${grepdwarf#*range entry }
+	done
+else
+	echo "ERROR: unexpected DWARF info, please file a BUG" >&2
+	echo -1
+	exit
+fi
+
+if ((pos==-1)); then
+	echo "ERROR: not found. Maybe inlined or wrong source(tag)?" >&2
+	echo -1
+else
+	# duplicate symbols position is 1-posed
+	if (($(wc -l <<<$grepkall) > 1)); then
+		pos+=1
+	fi
+	echo $pos
+fi

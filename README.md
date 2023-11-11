@@ -1,37 +1,52 @@
-# klpmake
+# KLPMAKE
 
-#### 介绍
-KLPMAKE 是个Linux内核热补丁制作工具
+Inspired by KPATCH @ https://github.com/dynup/kpatch. Many thanks!
 
-#### 软件架构
-软件架构说明
+KLPMAKE 是Linux内核热补丁制作工具，它调用编译工具链，将用户的补丁文件生成为“部分链接”的目标文件，对其中的`Livepatch Symbols -- non-exported global symbols and non-included local symbols`进行修正，最终生成符合[Livepatch module ELF format](https://www.kernel.org/doc/html/latest/livepatch/module-elf-format.html)的内核模块。
 
+用户以内核samples/livepatch/livepatch-sample.c为模板编写补丁模块源码。KLPMAKE通过内核DWARF信息和/proc/kallsyms，可靠解析定位`Livepatch Symbols`。制作时不编译内核，也基本架构无关。
 
-#### 安装教程
+不支持对内核模块打补丁。
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+### 用法
 
-#### 使用说明
+软件依赖：libdwarf-tools(dwarfdump) elfutils-libelf(gelf) bash
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+软件运行时需要获取对应当前内核的vmlinux中的DWARF信息，用户可通过`KLPMAKE_VMLINUX`环境变量指定其位置，默认为`/usr/lib/debug/lib/modules/$(uname -r)/vmlinux`。
 
-#### 参与贡献
+在补丁模块目录下，
+```
+klpmake
+```
 
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
+当要打补丁的是static函数时，先运行`kallsympos`查找定位它的position，写入补丁源码文件，然后再运行`klpmake`。
 
+`_klpmake.syms`是工具产生的`Livepatch Symbols`的position信息，需要时可进行手工查验。
 
-#### 特技
+### 补丁编写
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+为可靠地进行热补丁制作，补丁源码文件需按如下规则编写：
+
+1. 按照对应的内核原文件，一个一个组织需要的补丁文件
+2. 每个补丁文件增加一行单独的注释`//KLPMAKE 内核原文件路径名`，称为tag ，路径名是相对于内核源码树根
+3. 补丁文件中有一个是主文件，集中了livepatch的所有要素
+4. 引用未修改的static函数时，按原prototype进行声明，保持static关键字不变
+5. 内联化了的static函数引用，可展开，也可引入原static函数定义
+6. 补丁由多个文件组成时，主文件用extern声明其它其它文件中的补丁函数原型，其它文件中必须将该补丁函数定义为全局的
+
+以上看起来挺复杂，实际是普通模块编写中的常见问题，反复运行klpmake也可以一步步地提示解决。
+
+### 示例
+
+见[example](exaple/readme.md)。
+
+### 局限
+
+不支持数据类`Livepatch Symbols`。
+
+未考虑KSYM_NAME_LEN（512）符号名长度限制，不超过200时不会有问题。
+
+KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前测试版本gcc 12.3.1、ld 2.40、dwarfdump 0.7.0、kallsyms当前版本。
+
+非常期待你的试用与反馈！非常欢迎hacker来指点！
+
