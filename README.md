@@ -48,7 +48,7 @@ klpmake
 
 未考虑KSYM_NAME_LEN（512）符号名长度限制，不超过200时不会有问题。
 
-KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.7.0（DWARF v4）、kallsyms（内核6.4）。
+KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.7.0（DWARF v4）、kallsyms（内核6.4）。具体见程序脚本。
 
 非常期待你的试用与反馈！非常欢迎hacker来指点贡献！
 
