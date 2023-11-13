@@ -4,9 +4,9 @@ Inspired by KPATCH @ https://github.com/dynup/kpatch. Many thanks!
 
 KLPMAKE 是Linux内核热补丁制作工具，它调用编译工具链，将用户的补丁文件生成为“部分链接”的目标文件，对其中的`Livepatch Symbols -- non-exported global symbols and non-included local symbols`进行修正，最终生成符合[Livepatch module ELF format](https://www.kernel.org/doc/html/latest/livepatch/module-elf-format.html)的内核模块。
 
-用户以内核samples/livepatch/livepatch-sample.c为模板编写补丁模块源码。KLPMAKE通过内核DWARF信息和/proc/kallsyms，可靠解析定位`Livepatch Symbols`。制作时不编译内核，也基本架构无关。
+用户以内核samples/livepatch/livepatch-sample.c为模板编写补丁模块源码。KLPMAKE通过内核DWARF信息和/proc/kallsyms，可靠解析定位`Livepatch Symbols`。制作时不编译内核，不深入hacking ELF格式，也基本架构无关。
 
-不支持对内核模块打补丁。
+KLPMAKE小、简单、快，但不支持对内核模块打补丁。
 
 ### 用法
 
@@ -32,7 +32,7 @@ klpmake
 3. 补丁文件中有一个是主文件，集中了livepatch的所有要素
 4. 引用未修改的static函数时，按原prototype进行声明，保持static关键字不变
 5. 内联化了的static函数引用，可展开，也可引入原static函数定义
-6. 补丁由多个文件组成时，主文件用extern声明其它其它文件中的补丁函数原型，其它文件中必须将该补丁函数定义为全局的
+6. 补丁由多个文件组成时，主文件用extern声明其它文件中的补丁函数原型，其它文件中必须将补丁函数定义为全局的
 
 以上看起来挺复杂，实际是普通模块编写中的常见问题，反复运行klpmake也可以一步步地提示解决。
 
@@ -40,13 +40,15 @@ klpmake
 
 见[example](example/readme.md)。
 
+注意：示例仅针对的是[openEuler](https://openeuler.org/)操作系统及其CONFIG_LIVEPATCH_WO_FTRACE热补丁机制，应该较容易应用到其它系统上。
+
 ### 局限
 
 不支持数据类`Livepatch Symbols`。
 
 未考虑KSYM_NAME_LEN（512）符号名长度限制，不超过200时不会有问题。
 
-KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前测试版本gcc 12.3.1、ld 2.40、dwarfdump 0.7.0、kallsyms当前版本。
+KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.7.0（DWARF v4）、kallsyms（内核6.4）。
 
-非常期待你的试用与反馈！非常欢迎hacker来指点！
+非常期待你的试用与反馈！非常欢迎hacker来指点贡献！
 
