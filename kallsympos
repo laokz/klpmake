@@ -34,6 +34,16 @@ if [[ ! -e $VMLINUX ]]; then
 	echo -1
 	exit
 fi
+KLPMAKE_DIR=$(dirname $0)
+
+# check KASLR offset
+declare -i offset
+if [[ -z $KLPMAKE_KASLR ]]; then
+	. $KLPMAKE_DIR/kmfuncs
+	offset=$(kaslr_offset)
+else
+	offset=$KLPMAKE_KASLR
+fi
 
 src=$1
 symbol=$2
@@ -51,6 +61,7 @@ function compaddr()
 	while read addrstr tyna; do
 		# kallsyms address has no 0x prefix
 		addr="0x"$addrstr
+		((addr-=offset))
 		if ((addr>=st && addr<en)); then
 			echo $count
 			return

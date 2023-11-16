@@ -14,7 +14,7 @@ Build and runtime requires: libdwarf-tools(dwarfdump) elfutils-libelf(gelf) bash
 
 KLPMAKE needs query vmlinux's DWARF information, ensure corresponding compiler options enabled. In patches directory, run
 ```
-KLPMAKE_VMLINUX=path-to-vmlinux klpmake-dir/klpmake
+sudo KLPMAKE_VMLINUX=path-to-vmlinux klpmake-dir/klpmake
 ```
 
 `KLPMAKE_VMLINUX` default to `/usr/lib/debug/lib/modules/$(uname -r)/vmlinux`.
@@ -40,7 +40,7 @@ Complicated hnn? No worry. Lots of them are common for kernel developers and KLP
 
 See [example](example/readme.md).
 
-Note, all the examples were targeted at [openEuler](https://openeuler.org/) OS and its CONFIG_LIVEPATCH_WO_FTRACE mechanism. Might be easy to others?
+Note, all the examples were targeted at [openEuler](https://openeuler.org/) riscv64 OS and its CONFIG_LIVEPATCH_WO_FTRACE mechanism.
 
 ### Limits
 
@@ -49,6 +49,8 @@ Not considered data object `Livepatch Symbols`.
 Not respected `KSYM_NAME_LEN(512)`. If symbol name no more 200, nothing bad.
 
 KLPMAKE depends on some messages produced by a little tools. By now I only used  the followings, gcc 12.3.1, ld 2.40, dwarfdump 0.7.0(DWARF v4), kallsyms(kernel 6.4). See the scripts.
+
+The tool is developed and test on riscv64, and it's just on the first step.
 
 Welcome to try and feedback. Welcome contribution.
 

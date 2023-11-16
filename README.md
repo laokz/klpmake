@@ -12,12 +12,11 @@ KLPMAKE小、简单、快，但不支持对内核模块打补丁。
 
 软件依赖：libdwarf-tools(dwarfdump) elfutils-libelf(gelf) bash
 
-软件运行时需要获取对应当前内核的vmlinux中的DWARF信息，用户可通过`KLPMAKE_VMLINUX`环境变量指定其位置，默认为`/usr/lib/debug/lib/modules/$(uname -r)/vmlinux`。
-
-在补丁模块目录下，
+软件运行时需要获取对应当前内核的vmlinux中的DWARF信息，请确保使能了相关编译选项。在补丁模块目录下运行，
 ```
-klpmake
+sudo KLPMAKE_VMLINUX=path-to-vmlinux klpmake-dir/klpmake
 ```
+`KLPMAKE_VMLINUX`默认值为`/usr/lib/debug/lib/modules/$(uname -r)/vmlinux`。
 
 当要打补丁的是static函数时，先运行`kallsympos`查找定位它的position，写入补丁源码文件，然后再运行`klpmake`。
 
@@ -40,7 +39,7 @@ klpmake
 
 见[example](example/readme.md)。
 
-注意：示例仅针对的是[openEuler](https://openeuler.org/)操作系统及其CONFIG_LIVEPATCH_WO_FTRACE热补丁机制，应该较容易应用到其它系统上。
+注意：示例仅针对的是[openEuler](https://openeuler.org/)riscv64操作系统及其CONFIG_LIVEPATCH_WO_FTRACE热补丁机制。
 
 ### 局限
 
@@ -49,6 +48,8 @@ klpmake
 未考虑KSYM_NAME_LEN（512）符号名长度限制，不超过200时不会有问题。
 
 KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.7.0（DWARF v4）、kallsyms（内核6.4）。具体见程序脚本。
+
+工具是在riscv64平台上开发和测试的，刚刚迈出一小步...
 
 非常期待你的试用与反馈！非常欢迎hacker来指点贡献！
 

@@ -93,6 +93,10 @@ for ((i=0; i<${#lsrcs[@]}; i++)) do
 	lsrcs[i]=$tmp
 done
 
+# get KASLR offset
+. $KLPMAKE_DIR/kmfuncs
+export KLPMAKE_KASLR=$(kaslr_offset)
+
 echo "KLPMAKE: verifying non-included locals via vmlinux and /proc/kallsyms"
 declare -i pos
 for ((i=0; i<${#statics[@]}; i++)) do
