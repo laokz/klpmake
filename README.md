@@ -10,7 +10,30 @@ KLPMAKE小、简单、快，但不支持对内核模块打补丁。
 
 ### 用法
 
-软件依赖：libdwarf-tools(dwarfdump) elfutils-libelf(gelf) bash
+##### 软件依赖
+
+libdwarf-tools(dwarfdump) elfutils-libelf(gelf) bash modpost
+
+工具依赖kernel/scripts/modpost输出的符号信息，为防止相关信息被压缩，需要重新编译modpost：
+```
+--- scripts/mod/modpost.c.orig	2023-11-17 20:43:14.589757214 +0800
++++ scripts/mod/modpost.c	2023-11-17 20:43:40.114101691 +0800
+@@ -46,7 +46,7 @@
+  * Cut off the warnings when there are too many. This typically occurs when
+  * vmlinux is missing. ('make modules' without building vmlinux.)
+  */
+-#define MAX_UNRESOLVED_REPORTS	10
++#define MAX_UNRESOLVED_REPORTS	50
+ static unsigned int nr_unresolved;
+
+ /* In kernel, this size is defined in linux/module.h;
+```
+```
+cd scripts/mod
+gcc -o modpost modpost.c file2alias.c sumversion.c
+```
+
+##### 运行
 
 软件运行时需要获取对应当前内核的vmlinux中的DWARF信息，请确保使能了相关编译选项。在补丁模块目录下运行，
 ```
@@ -47,7 +70,9 @@ sudo KLPMAKE_VMLINUX=path-to-vmlinux klpmake-dir/klpmake
 
 未考虑KSYM_NAME_LEN（512）符号名长度限制，不超过200时不会有问题。
 
-KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.7.0（DWARF v4）、kallsyms（内核6.4）。具体见程序脚本。
+KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.7.0（DWARF v4）、kallsyms和modpost（内核6.4）。具体见程序脚本。
+
+如果vmlinux中的DWARF信息不完整或被破坏，工具将无法正常工作。
 
 工具是在riscv64平台上开发和测试的，刚刚迈出一小步...
 

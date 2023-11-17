@@ -15,7 +15,9 @@
 补丁来自KPATCH示例。加载使能补丁模块后，`cat /proc/meminfo`可以看到：
 
 原有字符串改为大写：VMALLOCCHUNK
+
 新增的static变量值：kpatch: 5
+
 控制台新增内核日志：hello there!
 
 ### syscall

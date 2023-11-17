@@ -49,7 +49,7 @@ static void show_val_kb(struct seq_file *m, const char *s, unsigned long num)
 	seq_write(m, " kB\n", 4);
 }
 
-// KLPMAKE 引用了本文件中定义的弱全局函数，RISC-V无相应的强函数，所以这里声明去除了弱属性
+// KLPMAKE 引用了本文件中定义的弱全局函数，声明要去除弱属性
 extern void arch_report_meminfo(struct seq_file *m);
 
 static int livepatch_meminfo_proc_show(struct seq_file *m, void *v)
