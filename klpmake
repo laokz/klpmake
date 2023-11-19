@@ -32,6 +32,7 @@ set -o pipefail
 KBUILD_MODPOST_WARN=1 make |& tee $makelog
 set +o pipefail
 ko=$(ls *.ko)
+mv -f $ko ${ko}.partial
 echo "KLPMAKE: OK"
 
 # get non-exported globals, non-included locals and their patch source
@@ -120,8 +121,10 @@ fi
 
 echo "KLPMAKE: fixing klp module"
 if [[ -e $klpsyms ]]; then
-	mv -f $ko ${ko}.partial
 	$KLPMAKE_DIR/fixklp ${ko}.partial $klpsyms
+else
+	mv -f ${ko}.partial $ko
 fi
+strip -g $ko
 echo "SUCCEED"
 
