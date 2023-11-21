@@ -224,12 +224,18 @@ static struct klp_patch patch = {
 
 static int livepatch_init(void)
 {
+#ifdef CONFIG_LIVEPATCH_WO_FTRACE
 	return klp_register_patch(&patch);
+#else
+	return klp_enable_patch(&patch);
+#endif
 }
 
 static void livepatch_exit(void)
 {
+#ifdef CONFIG_LIVEPATCH_WO_FTRACE
 	WARN_ON(klp_unregister_patch(&patch));
+#endif
 }
 
 module_init(livepatch_init);

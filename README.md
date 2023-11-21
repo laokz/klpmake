@@ -12,7 +12,7 @@ KLPMAKE小、简单、快，但不支持对内核模块打补丁。
 
 ##### 软件依赖
 
-libdwarf-tools(dwarfdump) elfutils-libelf(gelf) bash modpost
+libdwarf-tools(dwarfdump)0.8.0 elfutils-libelf(gelf) bash modpost
 
 工具依赖kernel/scripts/modpost输出的符号信息，为防止相关信息被压缩，需要重新编译modpost：
 ```
@@ -62,15 +62,13 @@ sudo KLPMAKE_VMLINUX=path-to-vmlinux klpmake-dir/klpmake
 
 见[example](example/readme.md)。
 
-注意：示例仅针对的是[openEuler](https://openeuler.org/)riscv64操作系统及其CONFIG_LIVEPATCH_WO_FTRACE热补丁机制。
-
 ### 局限
 
 不支持数据类`Livepatch Symbols`。
 
 未考虑KSYM_NAME_LEN（512）符号名长度限制，不超过200时不会有问题。
 
-KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.7.0（DWARF v4）、kallsyms和modpost（内核6.4）。具体见程序脚本。
+KLPMAKE依赖一些系统工具产生的信息进行分析识别，当前用到的是这些，gcc 12.3.1、ld 2.40、dwarfdump 0.8.0（0.7.0有问题）、kallsyms和modpost（内核6.4）。具体见程序脚本。
 
 如果vmlinux中的DWARF信息不完整或被破坏，工具将无法正常工作。
 

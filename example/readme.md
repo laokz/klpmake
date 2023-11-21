@@ -1,4 +1,4 @@
-以下示例在openEuler 23.09 kernel 6.4.0-10.1.0.20，启用CONFIG_LIVEPATCH_WO_FTRACE热补丁机制的riscv64平台上进行了测试验证。
+以下示例在openEuler 23.09 kernel 6.4.0-10.1.0.20，启用CONFIG_LIVEPATCH_WO_FTRACE热补丁机制的riscv64平台上进行了测试验证，在x86_64、aarch64上测试时代码需做适当调整（头文件路径、是否属于vmlinux、内联化了没有等）。
 
 ### netlink
 
@@ -26,7 +26,7 @@
 
 ### jumplable
 
-这是个真实例子。在aarch64平台上测试上面的netlink例子时，出现了补丁模块加载后[内核崩溃问题](https://gitee.com/laokz/klpmake/issues/I8HFMR)。经分析是[内核缺陷](https://gitee.com/openeuler/kernel/issues/I8HNHM?from=project-issue)。正好借此执修复一下，实际修改仅是`if (unlikely(!mod_klp_rel_completed(mod)))`修改成`if (unlikely(mod_klp_rel_completed(mod)))`，其它的示例代码均是搬过来的内联函数或一些声明（半个多小时的时间绝大部分消耗在这里了：/）。热修复后netlink例子成功加载使能。
+仅适用于CONFIG_LIVEPATCH_WO_FTRACE热补丁机制。这是个真实例子。在aarch64平台上测试上面的netlink例子时，出现了补丁模块加载后[内核崩溃问题](https://gitee.com/laokz/klpmake/issues/I8HFMR)。经分析是[内核缺陷](https://gitee.com/openeuler/kernel/issues/I8HNHM?from=project-issue)。正好借此执修复一下，实际修改仅是`if (unlikely(!mod_klp_rel_completed(mod)))`修改成`if (unlikely(mod_klp_rel_completed(mod)))`，其它的示例代码均是搬过来的内联函数或一些声明（半个多小时的时间绝大部分消耗在这里了：/）。热修复后netlink例子成功加载使能。
 
 以上示例均没有kallsyms中同名符号的情况，以后遇到再补上。
 
