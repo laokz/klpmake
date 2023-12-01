@@ -27,6 +27,7 @@
 
 /* KSYM_NAME_LEN is 512, not support yet */
 #define NAME_LEN 200
+#define MODULE_NAME_LEN 56
 #define SHF_RELA_LIVEPATCH	0x00100000
 #define SHN_LIVEPATCH		0xff20
 
@@ -47,6 +48,7 @@ struct rela_klpsym_t {
 /* one KLPSYM */
 struct klpsym_t {
 	char name[NAME_LEN];
+	char mod[MODULE_NAME_LEN];
 	struct rela_klpsym_t *head;
 	size_t symindex;
 	size_t pos;
@@ -55,6 +57,7 @@ struct klpsym_t {
 /* rela sections which must split to new .klp.rela */
 struct klp_rela_t {
 	char *sec_name;
+	char mod[MODULE_NAME_LEN];
 	size_t sec_index;
 	GElf_Shdr sh;
 	Elf_Data data;
@@ -121,8 +124,8 @@ static void scan_symtab(struct orig_elf_t *para, struct klpsyms_t *klpsyms)
 	E(gelf_getshdr(scn, &sh), NULL);
 	E(data = elf_getdata(scn, NULL), NULL);
 	/*
-	 * Begin after the last local symbol. Undefined static symbol
-	 * also been set GLOBAL binding in the "partial linked" ko .symtab.
+	 * Begin after the last local symbol. Non-included local symbols already
+	 * been set to GLOBAL bindings in the "partial linked" ko .symtab.
 	 */
 	for (size_t i = sh.sh_info; i < sh.sh_size / sh.sh_entsize; i++) {
    		E(gelf_getsym(data, i, &sym), NULL);
@@ -241,6 +244,7 @@ static void scan_newsecs(Elf *relf, struct klpsyms_t *klpsyms)
 
 			klpsyms->secs[count].sec_index = p->relasec_index;
 			klpsyms->secs[count].sec_name = p->relasec_name;
+			sprintf(klpsyms->secs[count].mod, "%s", klpsyms->u[j].mod);
 			E(scn = elf_getscn(relf, p->relasec_index), NULL);
 			E(gelf_getshdr(scn, &klpsyms->secs[count].sh), NULL);
 			E(data = elf_getdata(scn, NULL), NULL);
@@ -266,16 +270,16 @@ static void write_sec_common(Elf *welf, GElf_Shdr *sh, Elf_Data *data)
 	E(gelf_update_shdr(wscn, sh), 0);
 }
 
-/* .klp.sym.vmlinux.ORIG-NAME,0, including '\0' */
+/* .klp.sym.MOD.ORIG-NAME,0, including '\0' */
 static size_t klp_sym_strlen(struct klpsym_t *u)
 {	/* could POS been so large? */
-	return strlen(u->name) + (u->pos > 9 ? 2 : 1) + 18 + 1;
+	return strlen(u->name) + strlen(u->mod) + (u->pos > 9 ? 2 : 1) + 11 + 1;
 }
 
-/* .klp.rela.vmlinux.ORIG-NAME, including '\0', without original ".rela" */
-static size_t klp_rela_strlen(char *name)
+/* .klp.rela.MOD.ORIG-NAME, including '\0', without original ".rela" */
+static size_t klp_rela_strlen(struct klp_rela_t *r)
 {
-	return strlen(name) + 18 + 1 - 5;
+	return strlen(r->sec_name) - 5 + strlen(r->mod) + 11 + 1;
 }
 
 /* Copy original section header and data meta, new_buflen must >= the old. */
@@ -313,7 +317,7 @@ static void modify_strtab(Elf *welf, GElf_Shdr *sh, Elf_Data *data, struct klpsy
  	char *buf = newdata.d_buf + data->d_size;
 	int len;
 	for (int j = 0; j < klpsyms->klpsym_count; j++) {
-		len = sprintf(buf, ".klp.sym.vmlinux.%s,%d", klpsyms->u[j].name, klpsyms->u[j].pos);
+		len = sprintf(buf, ".klp.sym.%s.%s,%d", klpsyms->u[j].mod, klpsyms->u[j].name, klpsyms->u[j].pos);
 		buf += len + 1;
 	}
 
@@ -329,7 +333,7 @@ static void modify_shstrtab(Elf *welf, GElf_Shdr *sh, Elf_Data *data, struct klp
 
 	size_t newname_len = 0;
 	for (int j = 0; j < klpsyms->newsec_count; j++) {
-		newname_len += klp_rela_strlen(klpsyms->secs[j].sec_name);
+		newname_len += klp_rela_strlen(&klpsyms->secs[j]);
 	}
 
 	copy_sec_data_meta(sh, &newsh, data, &newdata, data->d_size + newname_len);
@@ -338,7 +342,7 @@ static void modify_shstrtab(Elf *welf, GElf_Shdr *sh, Elf_Data *data, struct klp
 	char *buf = newdata.d_buf + data->d_size;
 	int len;
 	for (int j = 0; j < klpsyms->newsec_count; j++) {
-		len = sprintf(buf, ".klp.rela.vmlinux.%s", klpsyms->secs[j].sec_name + 5);
+		len = sprintf(buf, ".klp.rela.%s.%s", klpsyms->secs[j].mod, klpsyms->secs[j].sec_name + 5);
 		buf += len + 1;
 	}
 
@@ -441,7 +445,7 @@ static void create_klp_rela_sec(Elf *welf, struct klpsyms_t *klpsyms, struct ori
 
 		wdata->d_size = new_entries * newsh.sh_entsize;
 		newsh.sh_name = offset;
-		offset += klp_rela_strlen(klpsyms->secs[i].sec_name);
+		offset += klp_rela_strlen(&klpsyms->secs[i]);
 		newsh.sh_size = newsh.sh_entsize * new_entries;
 		newsh.sh_flags = SHF_RELA_LIVEPATCH | SHF_INFO_LINK | SHF_ALLOC;
 		/* the library will take care .sh_offset */
@@ -513,11 +517,12 @@ int main(int argc, char **argv)
 	char *obj, *newobj, *p;
 	struct klpsyms_t klpsyms = {0};
 	FILE *f;
-	char buf[NAME_LEN + 10];
-	int i = 0, count = 0;
+	char buf[NAME_LEN + MODULE_NAME_LEN + 10];
+	int i, count;
 
 	if (argc != 3) {
 		fprintf(stderr, "Usage: $0 partial-linked-ko klpsym-list\n");
+		fprintf(stderr, "klpsym-list format: symbol-name position [module-name, empty for vmlinux]\n");
 		exit(2);
 	}
 
@@ -526,13 +531,18 @@ int main(int argc, char **argv)
 	E(p = strrchr(newobj, '.'), NULL);
 	*p = '\0';
 
+	count = 0;
 	E(f = fopen(argv[2], "r"), NULL);
-	while(fgets(buf, NAME_LEN + 10, f))
+	while(fgets(buf, NAME_LEN + MODULE_NAME_LEN + 10, f))
 		count++;
 	E(fseek(f, 0, SEEK_SET), -1);
 
+	i = 0;
 	E(klpsyms.u = malloc(count * sizeof(struct klpsym_t)), NULL);
-	while(fscanf(f, " %s %zu\n", klpsyms.u[i].name, &klpsyms.u[i].pos) == 2) {
+	while(fgets(buf, NAME_LEN + MODULE_NAME_LEN + 10, f)) {
+		sscanf(buf, " %s %zu %s\n", klpsyms.u[i].name, &klpsyms.u[i].pos, klpsyms.u[i].mod);
+		if (klpsyms.u[i].mod[0] == '\0')
+			sprintf(klpsyms.u[i].mod, "vmlinux");
 		klpsyms.u[i].head = NULL;
 		i++;
 	}
