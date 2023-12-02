@@ -119,6 +119,12 @@ if [ $error == "true" ]; then
 	exit 4;
 fi
 
+dup=$(cut -d' ' -f1 $klpsyms|sort |uniq -d)
+if [[ -n $dup ]]; then
+	echo "KLPMAKE ERROR: duplicate livepatch symbol: $dup"
+	exit 5
+fi
+
 echo "KLPMAKE: fixing klp module"
 if [[ -e $klpsyms ]]; then
 	$KLPMAKE_DIR/fixklp ${ko}.partial $klpsyms
