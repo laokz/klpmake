@@ -1,13 +1,13 @@
 /*
- * Fixklp is part of KLPMAKE. It converts Linux "partial linked" kernel
+ * Fixklp is part of klpmake. It converts Linux "partial linked" kernel
  * module which include references to livepatch symbols -- non-exported
  * globals, non-included locals(KLPSYM), to normal module per the
  * Livepatch module ELF format.
  *
  * No dynamic memory free here, all been left to OS.
  *
- * Copyright (c) 2023 ISCAS     laokz <zhangkai@iscas.ac.cn>
- * KLPMAKE is licensed under Mulan PSL v2.
+ * Copyright (c) 2023 laokz <zhangkai@iscas.ac.cn>
+ * Klpmake is licensed under Mulan PSL v2.
  * You can use this software according to the terms and conditions of
  * the Mulan PSL v2. You may obtain a copy of Mulan PSL v2 at:
  *          http://license.coscl.org.cn/MulanPSL2

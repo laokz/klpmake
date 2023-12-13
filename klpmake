@@ -1,12 +1,9 @@
 #!/bin/bash
 #
-# KLPMAKE is a linux kernel livepatch making tool.
+# Klpmake is a linux kernel livepatch making tool.
 #
-# Environment variable:
-#   KLPMAKE_VMLINUX  targeted kernel vmlinux, must contain debug info
-#
-# Copyright (c) 2023 ISCAS     laokz <zhangkai@iscas.ac.cn>
-# KLPMAKE is licensed under Mulan PSL v2.
+# Copyright (c) 2023 laokz <zhangkai@iscas.ac.cn>
+# Klpmake is licensed under Mulan PSL v2.
 # You can use this software according to the terms and conditions of
 # the Mulan PSL v2. You may obtain a copy of Mulan PSL v2 at:
 #          http://license.coscl.org.cn/MulanPSL2
@@ -17,120 +14,91 @@
 
 set -e
 LOCALE=C
-VMLINUX=${KLPMAKE_VMLINUX:-/usr/lib/debug/lib/modules/$(uname -r)/vmlinux}
-if [[ ! -e $VMLINUX ]]; then
-	echo "KLPMAKE: not found vmlinux, check KLPMAKE_VMLINUX environment"
-	exit 1
-fi
 KLPMAKE_DIR=$(dirname $0)
-
-echo "KLPMAKE: trying to make partial linked .ko"
-makelog=/tmp/klpmake.make.log
-# Important. We rely on clean make to find all KLPSYMs by now.
-make clean
-set -o pipefail
-KBUILD_MODPOST_WARN=1 make |& tee $makelog
-set +o pipefail
-ko=$(ls *.ko)
-mv -f $ko ${ko}.partial
-echo "KLPMAKE: OK"
-
-# get non-exported globals, non-included locals and their patch source
-declare -a externs
-declare -a statics
-declare -a lsrcs
-while read line; do
-	if [[ "$line" =~ ([^:]+):.*warning:\ ‘(.*)’\ used\ but\ never\ defined ]]; then
-		lsrcs+=(${BASH_REMATCH[1]})
-		statics+=(${BASH_REMATCH[2]})
-	elif [[ "$line" =~ modpost:\ \"(.*)\".*undefined ]]; then
-		externs+=(${BASH_REMATCH[1]})
-	fi
-done <$makelog
-for ((i=0; i<${#externs[@]}; i++)) do
-	for ((j=0; j<${#statics[@]}; j++)) do
-		if [ ${externs[i]} == ${statics[j]} ]; then
-			externs[i]=
-			break
-		fi
-	done
-done
-externs=(${externs[@]})
-
-# Saved SYM POS. If needed, you can edit and run fixklp manually.
+ERR_PREFIX="KLPMAKE ERROR:"
+KLPSRC_CONF="klpsrc.conf"
+cwd=$PWD
 klpsyms=_klpmake.syms
-rm -f $klpsyms
 
-echo "KLPMAKE: verifying non-exported globals in /proc/kallsyms"
-error=false
-for ((i=0; i<${#externs[@]}; i++)) do
-	printf "%-30s" ${externs[i]}
-	tmp=$(grep -E " ${externs[i]}\$" /proc/kallsyms|cut -d' ' -f2)
-	if [[ -z $tmp ]]; then
-		echo "ERROR: not found, check the patch"
-		error=true
-	elif [[ ${#tmp} -gt 1 ]]; then
-		echo "ERROR: found multiple occurrence, check the patch"
-		error=true
-	# not found 'u', 'v', or 'w' types(global) in kallsyms
-	elif [[ $tmp =~ ^[a-z] ]]; then
-		echo "ERROR: type '$tmp' is not a global, check the patch"
-		error=true
+function usage()
+{
+    cat << EOF
+Make Linux kernel livepatch.
+Before running, you need create a working directory and the name will
+be used as the livepatch module name, copy in patch, and edit a
+${KLPSRC_CONF} to describe the patch.
+
+KLPMAKE has two stage work, one for generating patch source, another to
+generate patch module(.ko). You can do them separately like 'klpmake 1',
+'klpmake 2'.
+
+Now only support one patch everytime, either target in-tree or OOT source.
+EOF
+}
+
+function stage1()
+{
+	echo "KLPMAKE: trying to generate patch source"
+	if [[ ! -e $KLPSRC_CONF ]]; then
+		echo $ERR_PREFIX "not found $KLPSRC_CONF"
+		usage
+		exit 1
+	fi
+
+	srcroot=$(grep src-root $KLPSRC_CONF|gawk '{print $2}')
+	srcfiles=($(grep src-name $KLPSRC_CONF|gawk '{print $2}'))
+	patch=$(ls *.patch)
+	cd $srcroot
+	patch --backup --suffix=.klpsrc -p1 --fuzz=0 < $cwd/$patch
+	for s in ${srcfiles[@]}; do
+		mv $s $cwd
+		mv $s.klpsrc $s
+	done
+
+	cd $cwd
+	rm -f $klpsyms
+	$KLPMAKE_DIR/klpsrc $(basename $cwd)
+	for s in ${srcfiles[@]}; do
+		s=$(basename $s)
+		mv $s $s.orig
+		mv $s.klp $s
+	done
+	echo "KLPMAKE: OK"
+}
+
+function stage2()
+{
+	echo "KLPMAKE: trying to make 'partial linked' .ko"
+	KBUILD_MODPOST_WARN=1 make
+	ko=$(ls *.ko)
+	mv -f $ko ${ko}.partial
+	echo "KLPMAKE: OK"
+
+	echo "KLPMAKE: fixing klp module"
+	if [[ -e $klpsyms ]]; then
+		$KLPMAKE_DIR/fixklp ${ko}.partial $klpsyms
 	else
-		# output KLPSYMs for fixklp
-		echo ${externs[i]} 0 >>$klpsyms
-		echo "OK"
+		mv -f ${ko}.partial $ko
 	fi
-done
+	#strip -g $ko
+	echo "SUCCEED"
+}
 
-# get original kernel source from KLPMAKE tag in the patch
-for ((i=0; i<${#lsrcs[@]}; i++)) do
-	tmp=$(grep -E '^[[:blank:]]*//KLPMAKE ' ${lsrcs[i]}|cut -d' ' -f2)
-	if [[ -z $tmp ]]; then
-		echo "KLPMAKE ERROR: not found tag for kernel source in ${lsrcs[i]}"
-		exit 2
-	fi
-	lsrcs[i]=$tmp
-done
-
-# get KASLR offset
-. $KLPMAKE_DIR/kmfuncs
-export KLPMAKE_KASLR=$(kaslr_offset)
-
-echo "KLPMAKE: verifying non-included locals via vmlinux and /proc/kallsyms"
-declare -i pos
-for ((i=0; i<${#statics[@]}; i++)) do
-	printf "%-30s" ${statics[i]}
-
-	if [[ $i == 0 || ${lsrcs[i-1]} != ${lsrcs[i]} ]]; then
-		grepdwarf=$(dwarfdump -u $(basename ${lsrcs[i]}) -d $VMLINUX|grep -E "DW_TAG_compile_unit.*DW_AT_name<${lsrcs[i]}>" || true)
-	fi
-	pos=$($KLPMAKE_DIR/kallsympos ${lsrcs[i]} ${statics[i]} "$grepdwarf")
-
-	if ((pos==-1)); then
-		error=true
-	else
-		# output KLPSYMs for fixklp
-		echo ${statics[i]} $pos >>$klpsyms
-		echo "OK"
-	fi
-done
-if [ $error == "true" ]; then
-	exit 4;
-fi
-
-dup=$(cut -d' ' -f1 $klpsyms|sort |uniq -d)
-if [[ -n $dup ]]; then
-	echo "KLPMAKE ERROR: duplicate livepatch symbol: $dup"
-	exit 5
-fi
-
-echo "KLPMAKE: fixing klp module"
-if [[ -e $klpsyms ]]; then
-	$KLPMAKE_DIR/fixklp ${ko}.partial $klpsyms
-else
-	mv -f ${ko}.partial $ko
-fi
-strip -g $ko
-echo "SUCCEED"
-
+case $# in
+	0)	stage1
+		stage2
+		;;
+	1)	if (($1 == 1)); then
+			stage1
+		elif (($1 == 2)); then
+			stage2
+		else
+			usage
+			exit 2
+		fi
+		;;
+	*)
+		usage
+		exit 3
+		;;
+esac
