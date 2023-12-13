@@ -1,11 +1,11 @@
 /*
- * Part of klpsrc. It gives functions to verify livepatch symbols'
+ * Part of klpsrc. It provides functions to verify livepatch symbols'
  * existence in /proc/kallsyms, and acquire their positions via
  * /proc/kallsyms, /proc/modules and module DWARF info.
  *
  * It seems that libdwarf would allocate some memory on actions or
- * errors. For simplicity, leave all these cleanup to dwarf_finish
- * when do end_mod_ksympos().
+ * errors. For simplicity, leave nearly all these cleanup to
+ * dwarf_finish when doing end_mod_sympos().
  *
  * Copyright (c) 2023 laokz <zhangkai@iscas.ac.cn>
  * Klpmake is licensed under Mulan PSL v2.
@@ -24,7 +24,7 @@
 #include <ftw.h>
 #include "klpsrc.h"
 
-/* default Kconfig */
+/* default kernel Kconfig value */
 #if defined(__aarch64__)
 #define KERNEL_TEXT_REF "_text"
 #define KERNEL_REF_BASE 0xffff800008000000UL
@@ -43,51 +43,54 @@
 /* seems the length can be very large? */
 #define KALLSYMS_LINE_LEN 256
 
-/* only dwarf call, hn ..., need predefined 'mod' 'err' variable */
-#define E(statement, fmt, ...) do {									\
-	int ret_ = statement;											\
-	if (ret_ == DW_DLV_NO_ENTRY) {									\
-		/* unexpected, DWARF info might corrupted */				\
-		fprintf(stderr, ERROR_MSG_PREFIX"%s:%d no entry: "fmt, 		\
-						__func__, __LINE__, ## __VA_ARGS__);		\
-		return -2;													\
-	} else if (ret_ == DW_DLV_ERROR) {								\
-		fprintf(stderr, ERROR_MSG_PREFIX"%s:%d %s %s\n", mod, 		\
-						__func__, __LINE__, dwarf_errmsg(err));		\
-		return -2;													\
-	}																\
+/* only dwarf call, hnn ..., need predefined 'err' variable */
+#define E(statement, fmt, ...) do {                                 \
+    int ret_ = statement;                                           \
+    if (ret_ == DW_DLV_NO_ENTRY) {                                  \
+        /* unexpected, DWARF info might corrupted */                \
+        fprintf(stderr, "ERROR: %s:%d no entry: "fmt, __func__, __LINE__,\
+                                            ## __VA_ARGS__);        \
+        return KLPSYM_ERROR;                                        \
+    } else if (ret_ == DW_DLV_ERROR) {                              \
+        fprintf(stderr, "ERROR: %s:%d %s\n", __func__, __LINE__,    \
+                                            dwarf_errmsg(err));     \
+        return KLPSYM_ERROR;                                        \
+    }                                                               \
 } while (0)
 
 int non_exported(struct para_t *para, const char *name)
 {
-	char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN];
-	int found = -1;
+    char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN];
+    int found = KLPSYM_NOT_FOUND;
 
-	rewind(para->fp);	/* anyway not to rewind? */
-	while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
-		sscanf(buf, "%*lx %*c %s", sym);
-		if (!strcmp(sym, name))	/* the symbol must be unique in all scope */
-			found = 1;
-		if (!strncmp(sym, EXPORTED_SYM_PREFIX, EXPORTED_SYM_PREFIX_LEN) &&
-				!strcmp(sym + EXPORTED_SYM_PREFIX_LEN, name))
-			return 0;
-	}
+    rewind(para->fp);    /* anyway not to rewind? */
+    while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
+        sscanf(buf, "%*lx %*c %s", sym);
+        /*
+         * Global symbol must be unique in all scope.
+         * Exported one must has a buddy __ksymtab_SYMBOL.
+         */
+        if (!strcmp(sym, name))
+            found = KLPSYM_NON_EXPORTED;
+        if (!strncmp(sym, EXPORTED_SYM_PREFIX, EXPORTED_SYM_PREFIX_LEN) &&
+                !strcmp(sym + EXPORTED_SYM_PREFIX_LEN, name))
+            return KLPSYM_EXPORTED;
+    }
 
-	if (found == -1)
-		fprintf(stderr, ERROR_MSG_PREFIX
-					"not found global symbol: %s in kallsyms\n", name);
-	return found;
+    if (found == KLPSYM_NOT_FOUND)
+        log_debug("not found global symbol: %s in kallsyms\n", name);
+    return found;
 }
 
-static Dwarf_Addr get_location_addr(struct para_t *para, Dwarf_Attribute attr)
+static Dwarf_Addr get_location_addr(Dwarf_Attribute attr)
 {
     Dwarf_Unsigned lcount = 0;
     Dwarf_Loc_Head_c loclist_head = 0;
-	Dwarf_Error err;
-	char *mod = para->mod;
+    Dwarf_Error err;
 
     E(dwarf_get_loclist_c(attr, &loclist_head, &lcount, &err), "");
 
+    /* don't care so many args, but that would fail if miss them */
     Dwarf_Small loclist_lkind = 0;
     Dwarf_Small lle_value = 0;
     Dwarf_Unsigned rawval1 = 0;
@@ -109,62 +112,67 @@ static Dwarf_Addr get_location_addr(struct para_t *para, Dwarf_Attribute attr)
     Dwarf_Unsigned opd2 = 0;
     Dwarf_Unsigned opd3 = 0;
     Dwarf_Unsigned offsetforbranch = 0;
+    /* location has only one entry */
     E(dwarf_get_location_op_value_c(locdesc_entry, 0, &op, &opd1, &opd2, &opd3,
                         &offsetforbranch, &err), "");
 
     dwarf_dealloc_loc_head_c(loclist_head);
+    /* opd1 is this location's address */
     return opd1;
 }
 
 static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
 {
     Dwarf_Die kid, d;
-    Dwarf_Error err = NULL;
-	Dwarf_Addr addr;
-	char *mod = para->mod;
+    Dwarf_Error err;
+    Dwarf_Addr addr = KLPSYM_ERROR;
 
+    /* walkthrough current compile unit's all direct children */
     E(dwarf_child(para->cu[para->src_idx], &kid, &err), "");
-	while(dwarf_siblingof_b(para->dbg, kid, 1, &d, &err) == DW_DLV_OK){
-		Dwarf_Half tag;
-		char *diename;
-		E(dwarf_tag(d, &tag, &err), "");
-		if (tag != DW_TAG_variable) {
-			dwarf_dealloc_die(kid);
-			kid = d;
-			continue;
-		}
-		E(dwarf_diename(d, &diename, &err), "");
-		if (strcmp(diename, var)) {
-			dwarf_dealloc_die(kid);
-			kid = d;
-			continue;
-		}
+    while(dwarf_siblingof_b(para->dbg, kid, 1, &d, &err) == DW_DLV_OK){
+        Dwarf_Half tag;
+        char *diename;
+        E(dwarf_tag(d, &tag, &err), "");
+        if (tag != DW_TAG_variable) {
+            dwarf_dealloc_die(kid);
+            kid = d;
+            continue;
+        }
+        E(dwarf_diename(d, &diename, &err), "");
+        if (strcmp(diename, var)) {
+            dwarf_dealloc_die(kid);
+            kid = d;
+            continue;
+        }
 
-	    Dwarf_Signed atcount;
-	    Dwarf_Attribute *atlist;
-	    E(dwarf_attrlist(d, &atlist, &atcount, &err), "");
-		for (int i = 0; i < atcount; ++i) {
-	        Dwarf_Half attrnum = 0;
-    	    const char *attrname = 0;
-        	E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
-			if (attrnum == DW_AT_location)
-				addr = get_location_addr(para, atlist[i]);
-	        dwarf_dealloc_attribute(atlist[i]);
-	    }
-	    dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
-		dwarf_dealloc_die(d);
-		break;
+        Dwarf_Signed atcount;
+        Dwarf_Attribute *atlist;
+        E(dwarf_attrlist(d, &atlist, &atcount, &err), "");
+        for (int i = 0; i < atcount; ++i) {
+            Dwarf_Half attrnum = 0;
+            const char *attrname = 0;
+            E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
+            if (attrnum == DW_AT_location)
+                addr = get_location_addr(atlist[i]);
+                /* without break to allow dealloc all attrs? */
+            dwarf_dealloc_attribute(atlist[i]);
+        }
+        dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
+        dwarf_dealloc_die(d);
+        break;
     }
 
-	dwarf_dealloc_die(kid);
-	return addr;
+    dwarf_dealloc_die(kid);
+    log_debug("search CU variable %s's addr=0x%lx\n", var, addr);
+    return addr;
 }
 
-/* current compile unit .text address ranges */
+/* current compile unit .text address ranges array */
+#define CU_RANGES_MAX 20
 static struct {
-	Dwarf_Addr lo;
-	Dwarf_Addr hi;
-} g_ranges[20];
+    Dwarf_Addr lo;
+    Dwarf_Addr hi;
+} g_ranges[CU_RANGES_MAX];
 static Dwarf_Signed g_ranges_count;
 
 static int update_code_range(struct para_t *para)
@@ -172,141 +180,154 @@ static int update_code_range(struct para_t *para)
     Dwarf_Signed atcount;
     Dwarf_Attribute *atlist;
     Dwarf_Half attrnum = 0;
-	Dwarf_Error err;
-	char *mod = para->mod;
+    Dwarf_Error err;
 
-	E(dwarf_attrlist(para->cu[para->src_idx], &atlist, &atcount, &err), "");
-	for (int i = 0; i < atcount; ++i) {
+    E(dwarf_attrlist(para->cu[para->src_idx], &atlist, &atcount, &err), "");
+    for (int i = 0; i < atcount; ++i) {
         E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
-		if (attrnum == DW_AT_ranges) {
-			Dwarf_Ranges *r;
-			Dwarf_Off off;
-			/* here not check FORM and RANGE kind */
-			E(dwarf_global_formref(atlist[i], &off, &err), "");
-			E(dwarf_get_ranges_b(para->dbg, off, para->cu[para->src_idx], NULL, &r, &g_ranges_count, NULL, &err),"");
-			if (g_ranges_count > 20) {
-				fprintf(stderr, ERROR_MSG_PREFIX"range count larger than 20\n");
-				return -1;
-			}
-			for(int k = 0; k < g_ranges_count; k++) {
-				g_ranges[k].lo = r[k].dwr_addr1;
-				g_ranges[k].hi = r[k].dwr_addr2;
-			}
-			dwarf_dealloc_ranges(para->dbg, r, g_ranges_count);
-			break;
-		} else if (attrnum == DW_AT_low_pc) {
-			Dwarf_Half form = 0;
-			enum Dwarf_Form_Class formclass = DW_FORM_CLASS_UNKNOWN;
-			g_ranges_count = 1;
-			E(dwarf_lowpc(para->cu[para->src_idx], &g_ranges[0].lo, &err), "");
-			E(dwarf_highpc_b(para->cu[para->src_idx],&g_ranges[0].hi, &form, &formclass, &err), "");
-			if (form != DW_FORM_addr &&	!dwarf_addr_form_is_indexed(form)) {
-				g_ranges[0].hi += g_ranges[0].lo;
-			}
-			break;
-		}
-	    dwarf_dealloc_attribute(atlist[i]);
+        if (attrnum == DW_AT_ranges) {  /* non-continuous address ranges */
+            Dwarf_Ranges *r;
+            Dwarf_Off off;
+
+            /* DW_AT_ranges point to an offset of a specific section */
+            E(dwarf_global_formref(atlist[i], &off, &err), "");
+            E(dwarf_get_ranges_b(para->dbg, off, para->cu[para->src_idx], NULL,
+                                        &r, &g_ranges_count, NULL, &err), "");
+            if (g_ranges_count > CU_RANGES_MAX) {
+                /* don't error out as the found ranges might be enough */
+                fprintf(stderr, "ERROR: %s code address ranges count larger than %s\n",
+                                                     para->src, CU_RANGES_MAX);
+            }
+            /* here not check FORM and RANGE kind? */
+            for(int k = 0; k < g_ranges_count; k++) {
+                g_ranges[k].lo = r[k].dwr_addr1;
+                g_ranges[k].hi = r[k].dwr_addr2;
+                log_debug("%s code address range%d: 0x%lx - 0x%lx\n", para->src,
+                                            k, g_ranges[k].lo, g_ranges[k].hi);
+            }
+            dwarf_dealloc_ranges(para->dbg, r, g_ranges_count);
+            break;
+        } else if (attrnum == DW_AT_low_pc) {   /* single continuous address range */
+            Dwarf_Half form = 0;
+            enum Dwarf_Form_Class formclass = DW_FORM_CLASS_UNKNOWN;
+            g_ranges_count = 1;
+            E(dwarf_lowpc(para->cu[para->src_idx], &g_ranges[0].lo, &err), "");
+            /* highpc might be an address, or an offset to lowpc */
+            E(dwarf_highpc_b(para->cu[para->src_idx], &g_ranges[0].hi, &form,
+                                                        &formclass, &err), "");
+            if ((form != DW_FORM_addr) && !dwarf_addr_form_is_indexed(form)) {
+                g_ranges[0].hi += g_ranges[0].lo;
+            }
+            log_debug("%s code address range: 0x%lx - 0x%lx\n", para->src,
+                                            g_ranges[0].lo, g_ranges[0].hi);
+            break;
+        }
+        dwarf_dealloc_attribute(atlist[i]);
     }
-	dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
-	return 0;
+    dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
+    return 0;
 }
 
-int non_included(struct para_t *para, const char *name, int is_func)
+int non_included(struct para_t *para, const char *name, int is_var)
 {
-	/* recognize and update current compile unit .text address aranges */
-	static char *module = NULL, *source = NULL;
-	if (is_func && (!module || !source || strcmp(module, para->mod) || strcmp(source, para->src))) {
-		if (update_code_range(para) < 0)
-			return -2;
-		module = para->mod;
-		source = para->src;
-	}
+    /* record current source code address ranges */
+    static char *module = NULL, *source = NULL;
+    if (!is_var && (!module || !source || strcmp(module, para->mod) ||
+                                        strcmp(source, para->src))) {
+        if (update_code_range(para) == KLPSYM_ERROR)
+            return KLPSYM_ERROR;
+        module = para->mod;
+        source = para->src;
+    }
 
-	char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN], mod[KALLSYMS_LINE_LEN];
-	unsigned long addr;
-	int count, pos;
+    char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN], mod[KALLSYMS_LINE_LEN];
+    unsigned long addr;
+    int count, pos;
 
-	pos = -1;
-	count = 0;
-	rewind(para->fp);
-	while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
-		mod[0] = '\0';
-		sscanf(buf, "%lx %*c %s [%[^]]]\n", &addr, sym, mod);
-		if ((mod[0] == '\0') && strcmp(para->mod, "vmlinux") ||
-			(mod[0] != '\0') && strcmp(mod, para->mod) || strcmp(sym, name))
-			continue;
+    pos = KLPSYM_NOT_FOUND;
+    count = 0;
+    rewind(para->fp);
+    while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
+        mod[0] = '\0';
+        sscanf(buf, "%lx %*c %s [%[^]]]\n", &addr, sym, mod);
+        if ((mod[0] == '\0') && strcmp(para->mod, "vmlinux") ||
+            (mod[0] != '\0') && strcmp(mod, para->mod) || strcmp(sym, name))
+            continue;
 
-		/* already matched, just count duplicate names */
-		if (pos != -1) {
-			count++;
-			continue;
-		}
+        /* already matched, just count duplicate */
+        if (pos != KLPSYM_NOT_FOUND) {
+            count++;
+            continue;
+        }
 
-		addr -= para->koffset;
-		if (is_func) {
-			for (int i = 0; i < g_ranges_count; i++) {
-				if ((addr >= g_ranges[i].lo) && (addr < g_ranges[i].hi))
-					pos = count;
-			}
-		} else {
-			unsigned long var_addr = get_var_addr(para, name);
-			if (var_addr == -2)
-				return -2;
-			if (addr == var_addr)
-				pos = count;
-		}
-		count++;
-	}
+        addr -= para->koffset;
+        if (is_var) {
+            unsigned long var_addr = get_var_addr(para, name);
+            if (var_addr == KLPSYM_ERROR)
+                return KLPSYM_ERROR;
+            if (addr == var_addr)
+                pos = count;
+        } else {
+            for (int i = 0; i < g_ranges_count; i++) {
+                if ((addr >= g_ranges[i].lo) && (addr < g_ranges[i].hi)) {
+                    pos = count;
+                    break;
+                }
+            }
+        }
+        count++;
+    }
 
-	if ((pos != -1) && (count > 1))
-		pos++;	/* duplicate symbol is 1-indexed */
-	return pos;
+    if ((pos != KLPSYM_NOT_FOUND) && (count > 1))
+        pos++;    /* duplicate symbol is 1-indexed */
+    return pos;
 }
 
 static int update_mod_base(struct para_t *para)
 {
-	char buf[256];
-	char *p, *q;
-	int found = 0;
-	FILE *fp = fopen("/proc/modules", "r");
-	if (fp == NULL) {
-		perror(ERROR_MSG_PREFIX"open /proc/modules");
-		return -1;
-	}
+    char buf[KALLSYMS_LINE_LEN];
+    char *p, *q;
+    int found = 0;
+    FILE *fp = fopen("/proc/modules", "r");
+    if (fp == NULL) {
+        perror("open /proc/modules");
+        return -1;
+    }
 
-	while (fgets(buf, 256, fp)) {
-		p = strchr(buf, ' ');
-		q = strrchr(buf, ' ');
-		*p = '\0';
-		if (!strcmp(buf, para->mod)) {
-			para->koffset = strtoul(q, NULL, 16);
-			found = 1;
-			break;
-		}
-	}
-	fclose(fp);
+    while (fgets(buf, KALLSYMS_LINE_LEN, fp)) {
+        p = strchr(buf, ' ');
+        *p = '\0';
+        if (!strcmp(buf, para->mod)) {
+            q = strrchr(p + 1, ' ');
+            para->koffset = strtoul(q, NULL, 16);
+            found = 1;
+            log_debug("module %s base=0x%lx\n", para->mod, para->koffset);
+            break;
+        }
+    }
+    fclose(fp);
 
-	if (!found) {
-		fprintf(stderr, ERROR_MSG_PREFIX
-				"not found %s in /proc/modules\n", para->mod);
-		return -1;
-	}
-	return 0;
+    if (!found) {
+        fprintf(stderr, "ERROR: not found module %s in /proc/modules\n", para->mod);
+        return -1;
+    }
+    return 0;
 }
 
 static void calc_kaslr_offset(struct para_t *para)
 {
-	char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN];
-	unsigned long addr;
+    char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN];
+    unsigned long addr;
 
-	rewind(para->fp);
-	while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
-		sscanf(buf, "%lx %*c %s", &addr, sym);
-		if (!strcmp(sym, KERNEL_TEXT_REF)) {
-			para->koffset = addr - KERNEL_REF_BASE;
-			return;
-		}
-	}
+    rewind(para->fp);
+    while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
+        sscanf(buf, "%lx %*c %s", &addr, sym);
+        if (!strcmp(sym, KERNEL_TEXT_REF)) {
+            para->koffset = addr - KERNEL_REF_BASE;
+            log_debug("KASLR offset=0x%lx\n", para->koffset);
+            return;
+        }
+    }
 }
 
 /*
@@ -318,103 +339,111 @@ static char *module_name;
 static int filter(const char *fpath, const struct stat *sb,
                          int typeflag, struct FTW *ftwbuf)
 {
-	if ((typeflag == FTW_F) &&
-		!strncmp(fpath + ftwbuf->base, module_name, strlen(module_name))) {
-		strcpy(module_name, fpath);
-		return 1;
-	}
-	return 0;
+    if ((typeflag == FTW_F) &&
+        !strncmp(fpath + ftwbuf->base, module_name, strlen(module_name))) {
+        strncpy(module_name, fpath, KALLSYMS_LINE_LEN);
+        return 1;
+    }
+    return 0;
 }
 static int find_mod_path(const char *root)
 {
     int n = nftw(root, filter, 20, 0);
 
     if (n <= 0) {
-		fprintf(stderr, ERROR_MSG_PREFIX
-					"failed found %s in %s\n", module_name, root);
-		return -1;
+        fprintf(stderr, "ERROR: failed found %s* in %s\n", module_name, root);
+        return -1;
     }
-	return 0;
+    return 0;
 }
 
 static int find_cus(struct para_t *para, struct src_t *srcs, int src_count)
 {
-	char *mod = para->mod;
-	char *diename;
+    char *diename;
     Dwarf_Die cu_die;
-	Dwarf_Error err;
-	int count = 0;
-	int i;
+    Dwarf_Error err;
+    int count = 0;
+    int i;
 
+    /* from libdwarf document, CUs can only walkthrough once */
     do {
         E(dwarf_next_cu_header_d(para->dbg, 1, NULL, NULL, NULL, NULL, NULL,
-								NULL, NULL, NULL, NULL, NULL, &err), "");
+                                NULL, NULL, NULL, NULL, NULL, &err), "");
 
         E(dwarf_siblingof_b(para->dbg, NULL, 1, &cu_die,&err), "");
-		E(dwarf_diename(cu_die, &diename, &err), "");
-		for (i = 0; i < src_count; i++) {
-			if (!strcmp(diename, srcs[i].src_name)) {
-				para->cu[i] = cu_die;
-				count++;
-				break;
-			}
-		}
-		if (i == src_count)
-			dwarf_dealloc_die(cu_die);
+        E(dwarf_diename(cu_die, &diename, &err), "");
+        for (i = 0; i < src_count; i++) {
+            if (!strcmp(diename, srcs[i].src_name)) {
+                para->cu[i] = cu_die;
+                count++;
+                log_debug("found %s's compile unit\n", diename);
+                break;
+            }
+        }
+        /* free no used CU */
+        if (i == src_count)
+            dwarf_dealloc_die(cu_die);
     } while (count < src_count);
     return 0;
 }
 
-int begin_mod_ksympos(struct para_t *para, struct src_t *srcs, int src_count)
+int begin_mod_sympos(struct para_t *para, struct src_t *srcs, int src_count)
 {
-    Dwarf_Error err = NULL;
-	char mod[256];
+    Dwarf_Error err;
+    char mod[KALLSYMS_LINE_LEN];
 
-	/* open /proc/kallsyms once */
-	if (!para->fp) {
-		para->fp = fopen("/proc/kallsyms", "r");
-		if (para->fp == NULL) {
-			perror(ERROR_MSG_PREFIX"open /proc/kallsyms");
-			return -2;
-		}
-	}
+    /* open /proc/kallsyms once */
+    if (!para->fp) {
+        para->fp = fopen("/proc/kallsyms", "r");
+        if (para->fp == NULL) {
+            perror("open /proc/kallsyms");
+            return KLPSYM_ERROR;
+        }
+        log_debug("/proc/kallsyms opened for reading\n");
+    }
 
-	/* open DWARF file */
-	if (strcmp(para->mod, "vmlinux")) {
-		strcpy(mod, para->mod);
-		module_name = mod;
-		if (find_mod_path(para->debug_root) == -1)
-			return -1;
-	} else {
-		sprintf(mod, "%s/vmlinux", para->debug_root);
-	}
-	E(dwarf_init_path(mod, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL,
-			&para->dbg, &err), "not found DWARF info in %s\n", mod);
+    /* open DWARF file */
+    if (strcmp(para->mod, "vmlinux")) {
+        sprintf(mod, "%s.ko", para->mod);
+        module_name = mod;
+        if (find_mod_path(para->debug_root) == -1)
+            return -1;
+    } else {
+        snprintf(mod, KALLSYMS_LINE_LEN, "%s/vmlinux", para->debug_root);
+    }
+    E(dwarf_init_path(mod, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL,
+            &para->dbg, &err), "not found DWARF info in %s\n", mod);
+    log_debug("%s opened for querying\n", mod);
 
-	if (find_cus(para, srcs, src_count) < 0)
-		return -2;
+    if (find_cus(para, srcs, src_count) < 0)
+        return KLPSYM_ERROR;
 
-	if (strcmp(para->mod, "vmlinux"))
-		return update_mod_base(para);
-	else
-		calc_kaslr_offset(para);
+    if (strcmp(para->mod, "vmlinux"))
+        return update_mod_base(para);
+    else
+        calc_kaslr_offset(para);
     return 0;
 }
 
-void end_mod_ksympos(struct para_t *para, struct src_t *srcs, int src_count, int end_all)
+/*
+ * When end_all, src_count should set to 0 as we don't know
+ * if there any error out and which CUs alive. Leave the final
+ * cleanup to dwarf_finish.
+ */
+void end_mod_sympos(struct para_t *para, int src_count, int end_all)
 {
-	for (int i = 0; i < src_count; i++)
-		if (para->cu[i]) {
-			dwarf_dealloc_die(para->cu[i]);
-			para->cu[i] = NULL;
-		}
-	if (para->dbg) {
-   		(void)dwarf_finish(para->dbg);
-		para->dbg = NULL;
-	}
-	if (end_all && para->fp) {
-		fclose(para->fp);
-		para->fp = NULL;
-	}
+    for (int i = 0; i < src_count; i++)
+        if (para->cu[i]) {
+            dwarf_dealloc_die(para->cu[i]);
+            para->cu[i] = NULL;
+        }
+    if (para->dbg) {
+           (void)dwarf_finish(para->dbg);
+        para->dbg = NULL;
+    }
+    if (end_all && para->fp) {
+        fclose(para->fp);
+        para->fp = NULL;
+    }
 }
 

@@ -1,6 +1,6 @@
 # KLPMAKE
 
-正试验自动生成补丁源码，并增加对已加载模块打补丁、处理变量类`Livepatch Symbols`问题，所以代码有点乱、垃圾（
+目前工具运行只需要一个.patch文件，在x86_64上跑过了这几个示例。
 
 Inspired by KPATCH @ https://github.com/dynup/kpatch. Many thanks!
 
@@ -16,30 +16,41 @@ KLPMAKE小、简单、快。
 
 libdwarf(>=0.8.0) libclang elfutils-libelf(gelf) bash
 
-不同的发行版，软件安装的目录可能不同。目前这里是openEuler的。
-
-编译：`make`
+不同的发行版，软件安装的目录可能不同。在编译`make`前检查并修改config.h和Makefile中的有关内容。
 
 ##### 运行
 
-软件运行时需要获取对应当前内核的vmlinux中的DWARF信息，请确保使能了相关编译选项。将补丁文件放到工作目录下，并按照klpsrc.conf.sample的样子，手工编辑一个klpsrc.conf文件，然后
+软件运行时需要获取对应当前内核的vmlinux中的DWARF信息，请确保使能了相关编译选项。将补丁文件放到工作目录下，
 ```
-sudo klpmake-dir/klpmake
+sudo klpmake-dir/klpmake -s source-tree-root -b debuginfo-tree-root
 ```
 
-Klpmake可分两步执行：
- - 一是`klpmake 1`生成补丁模块源码，之后你可以检查生成了哪些东西，是否正确，并且可以修改。这步还为下步提供一个`_klpmake.syms`文件，保存的是`Livepatch Symbols`的position信息，需要时可进行手工查验修改
- - 二是`klpmake 2`编译出二进制模块，这一步除修正`Livepatch Symbols`的ELF信息外，其它与常规模块编译相同
+### 生成的文件
+
+- livepatch.c		补丁模块主文件
+- *.c			    补丁模块其它文件
+- Makefile			补丁模块Makefile，以上文件由klpsrc生成
+- *.ko              最终生成的补丁模块
+- _klpsrc.conf      补丁基本信息，klpmake生成，klpsrc使用
+- _klpmake.syms		KLPSYM位置信息，klpsrc生成，fixklp使用
+- *.c.patched       打补丁后的源码文件
+- *.ko.patial       “部分链接”的补丁，内核编译工具生成，fixklp使用
 
 ### 示例
 
-见[example](example/readme.md)。示例部分这次未作修改，如果修改的话，每个示例下存放的应是klpsrc.conf和.patch两个文件。
+见[example](example/readme.md)。示例部分这次未作修改，如果修改的话，每个示例下存放的应是一个.patch文件。
 
 ### 局限
 
-未考虑KSYM_NAME_LEN（512）符号名长度限制，不超过200时不会有问题。
-
-如果vmlinux中的DWARF信息不完整或被破坏，工具将无法正常工作。
+- 查找源码所属模块时，依赖同目录下Makefile严格的代码模式匹配（klpmake）
+- 查找修改的函数时，依赖严格的.patch代码模式匹配（klpmake）
+- 不支持对基于ftrace livepatch机制的系统调用打补丁（klpmake、klpsrc）
+- 不支持patched函数及其inlined的被调用者引用原有的const变量（klpsrc）
+- 不支持patched函数及其inlined的被调用函数参数有属性（klpsrc）
+- 如果vmlinux/模块的DWARF信息不完整工具将无法工作（klpsrc）
+- 未考虑hook问题（klpsrc）
+- 不支持不同源文件的non-included static符号、被补丁函数重名（klpsrc、fixklp）
+- 未考虑KSYM_NAME_LEN（512）符号名长度限制（klpsrc、fixklp）
 
 工具是在riscv64平台上开发和测试的，刚刚迈出一小步...
 

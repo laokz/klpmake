@@ -15,90 +15,261 @@
 set -e
 LOCALE=C
 KLPMAKE_DIR=$(dirname $0)
-ERR_PREFIX="KLPMAKE ERROR:"
-KLPSRC_CONF="klpsrc.conf"
 cwd=$PWD
 klpsyms=_klpmake.syms
+klpconf=_klpsrc.conf
+srcroot=
+dbgroot=
+debug=
 
 function usage()
 {
     cat << EOF
 Make Linux kernel livepatch.
-Before running, you need create a working directory and the name will
-be used as the livepatch module name, copy in patch, and edit a
-${KLPSRC_CONF} to describe the patch.
+Usage: $0 -s src-root -b debuginfo-root [-d] [0|1|2]
+            -s    kernel/OOT source root, step0 only
+            -b    kernel/OOT debuginfo, step0 only
+            -d    log debug, optional
+            0-2   select step0, 1 or 2 work, optional, default to all
+                  step0    collect and appaly patch
+                  step1    generate livepatch source
+                  step2    build livepatch module
 
-KLPMAKE has two stage work, one for generating patch source, another to
-generate patch module(.ko). You can do them separately like 'klpmake 1',
-'klpmake 2'.
+Before running, create a working directory and copy .patch in. The directory
+name will be the livepatch module name. In the directory, run klpmake.
 
-Now only support one patch everytime, either target in-tree or OOT source.
+Now one livepatch module support only one patch file, either target in-tree
+or out-of-tree source.
+
+Suggest running klpmake step by step, check and verify each step's result.
 EOF
 }
 
-function stage1()
+# NOTE: the matching regex might be too limited.
+function get_one_module()
 {
-	echo "KLPMAKE: trying to generate patch source"
-	if [[ ! -e $KLPSRC_CONF ]]; then
-		echo $ERR_PREFIX "not found $KLPSRC_CONF"
-		usage
-		exit 1
-	fi
+    local line obj_re ymc_re src_re obj ymc
+    obj_re='^[^-]+'
+    ymc_re='[^[:blank:]=:+]+'
+    src_re="\b$2\b"
 
-	srcroot=$(grep src-root $KLPSRC_CONF|gawk '{print $2}')
-	srcfiles=($(grep src-name $KLPSRC_CONF|gawk '{print $2}'))
-	patch=$(ls *.patch)
-	cd $srcroot
-	patch --backup --suffix=.klpsrc -p1 --fuzz=0 < $cwd/$patch
-	for s in ${srcfiles[@]}; do
-		mv $s $cwd
-		mv $s.klpsrc $s
-	done
+    while read line; do
+        if [[ "$line" =~ ($obj_re)-($ymc_re).*$src_re ]]; then
+            obj=${BASH_REMATCH[1]}
+            ymc=${BASH_REMATCH[2]}
+            if [[ "$ymc" =~ \$\((.*)\) ]]; then
+                ymc=$(grep ${BASH_REMATCH[1]}= /boot/config-`uname -r`|\
+                                                            cut -d'=' -f2)
+            fi
+            if [[ -z $ymc ]]; then
+                echo "ERROR: source $1/$2 not enabled in Kconfig"
+                return 42
+            fi
 
-	cd $cwd
-	rm -f $klpsyms
-	$KLPMAKE_DIR/klpsrc $(basename $cwd)
-	for s in ${srcfiles[@]}; do
-		s=$(basename $s)
-		mv $s $s.orig
-		mv $s.klp $s
-	done
-	echo "KLPMAKE: OK"
+            # If no obj-* line in the same directory Makefile, then error.
+            if [[ "$obj" == "obj" ]]; then
+                if [[ $ymc == "y" ]]; then
+                    mod="vmlinux"
+                else
+                    mod="$2"
+                fi
+                return 0
+            else
+                get_one_module $1 $obj || return
+                return
+            fi
+        fi
+    done <<< $(< $1/Makefile)
+
+    echo "ERROR: failed match $1/$2 in $1/Makefile"
+    return 42
 }
 
-function stage2()
+# Find sources' module they belong to and save in caller's 'modules' array.
+function get_modules()
 {
-	echo "KLPMAKE: trying to make 'partial linked' .ko"
-	KBUILD_MODPOST_WARN=1 make
-	ko=$(ls *.ko)
-	mv -f $ko ${ko}.partial
-	echo "KLPMAKE: OK"
+    local mod bname dir
 
-	echo "KLPMAKE: fixing klp module"
-	if [[ -e $klpsyms ]]; then
-		$KLPMAKE_DIR/fixklp ${ko}.partial $klpsyms
-	else
-		mv -f ${ko}.partial $ko
-	fi
-	#strip -g $ko
-	echo "SUCCEED"
+    for s in $1; do
+        bname=$(basename $s)
+        bname=${bname/%.?/.o}
+        dir=$(dirname $s)
+        get_one_module $dir $bname || return
+        modules[$mod]+=$s" "
+    done
 }
 
+# Find all changed funcs in a patch and save in caller's 'sources' array.
+# NOTE: the matching regex might be too limited.
+function get_funcs()
+{
+    local line src_oe name_re at2_re func_re end_re src func saved goon f
+    src_re='^--- [^[:blank:]/]+/([^[:blank:]]+)'
+    # the last captch group is only for syscall
+    name_re='(\b[[:alnum:]_]+\b)[[:blank:]]*\(([^,)]+)'
+    at2_re="^@@[^@]+@@.*$name_re"
+    func_re="^ [[:alpha:]_].*$name_re"
+    end_re='^ }[[:blank:]]*$'
+
+    IFS=
+    while read line; do
+        if [[ "$line" =~ $src_re ]]; then
+            src=${BASH_REMATCH[1]}
+            # only care .c file
+            if [[ $src == *.c ]]; then
+                func=
+                saved="no"
+                goon="true"
+            else
+                goon="false"
+            fi
+        fi
+        if [[ $goon == "false" ]]; then
+            continue
+        fi
+
+        if [[ "$line" =~ $at2_re ]] || [[ "$line" =~ $func_re ]]; then
+            f=${BASH_REMATCH[1]}
+            # replace syscall macro with real name
+            if [[ $f == SYSCALL_DEFINE* ]]; then
+                f="__do_sys_"${BASH_REMATCH[2]}
+            fi
+            if [[ $func != $f ]]; then
+                func=$f
+                saved="no"
+            fi
+        elif [[ "$line" =~ $end_re ]]; then
+            # When matched func close brace, the func is over.
+            saved="yes"
+        elif [[ "$line" =~ ^(-|\+) ]]; then
+            if [[ $saved == "no" ]]; then
+                sources[$src]+=$func" "
+                saved="yes"
+            fi
+        fi
+    done <<< $(< $1)
+    unset IFS
+}
+
+# apply patch, generate $klpconf for klpsrc
+function step0()
+{
+    echo "step0: collect and apply patch, patch info saved in $klpconf"
+    local a_patch srcfiles
+    local -A modules sources
+
+    a_patch=$(ls *.patch)
+    srcfiles=$(grep "+++ " $a_patch|gawk '{print gensub("[^/]*/", "", 1, $2)}')
+
+    cd $srcroot
+    patch --backup --suffix=.klpsrc -p1 --fuzz=0 < $cwd/$a_patch
+    for s in $srcfiles; do
+        mv -f $s $cwd
+        mv $s.klpsrc $s
+    done
+    get_modules "$srcfiles"
+
+    cd $cwd
+    rm -f $klpconf
+    get_funcs $a_patch
+    echo "obj-m" $(basename $cwd) >> $klpconf
+    echo "src-root" $srcroot >> $klpconf
+    echo "debug-root" $dbgroot >> $klpconf
+    for m in ${!modules[@]}; do
+        echo -e "\nmodule-name" $m >> $klpconf
+        for s in ${modules[$m]}; do
+            echo -e "\tsrc-name" $s >> $klpconf
+            for f in ${sources[$s]}; do
+                echo -e "\t\tfunc-name" $f >> $klpconf
+            done
+        done
+    done
+    echo "OK"
+}
+
+# generate livepatch source
+# NOTE: source tree must in not-patched state before running
+function step1()
+{
+    echo -e "\nstep1: generate livepatch source, KLPSYMs info saved in $klpsyms"
+    local sym
+
+    rm -f $klpsyms
+    $KLPMAKE_DIR/klpsrc $debug
+
+    # if there is no KLPSYMs in the livepatch, then it is a normal module
+    if [[ -e $klpsyms ]]; then
+        sym=$(cut -d' ' -f1 $klpsyms|sort|uniq -d)
+        if [[ -n "$sym" ]]; then
+            echo "ERROR: not support duplicate KLPSYM: "$sym
+            exit 7
+        fi
+    fi
+
+    for s in $(grep src-name $klpconf|cut -d' ' -f2); do
+        s=$(basename $s)
+        mv $s $s.patched
+        mv $s.klp $s
+    done
+    echo "OK"
+}
+
+# make livepatch module
+function step2()
+{
+    echo -e "\nstep2: making livepatch module...\n"
+    local ko
+
+    KBUILD_MODPOST_WARN=1 make
+    ko=$(ls *.ko)
+    mv -f $ko ${ko}.partial
+
+    if [[ -e $klpsyms ]]; then
+        $KLPMAKE_DIR/fixklp ${ko}.partial $klpsyms
+    else
+        mv -f ${ko}.partial $ko
+    fi
+    strip -g $ko
+    echo "SUCCEED"
+}
+
+# parse options
+args=`getopt -u -o s:b:d -- $@`
+set -- $args
+while [[ "$1" != "--" ]]; do
+    case "$1" in
+        -s)  srcroot=$2; shift 2;;
+        -b)  dbgroot=$2; shift 2;;
+        -d)  debug=-d; shift;;
+         *)  usage; exit 1;;
+    esac
+done
 case $# in
-	0)	stage1
-		stage2
-		;;
-	1)	if (($1 == 1)); then
-			stage1
-		elif (($1 == 2)); then
-			stage2
-		else
-			usage
-			exit 2
-		fi
-		;;
-	*)
-		usage
-		exit 3
-		;;
+    1)  if [[ -z $srcroot ]] || [[ -z $dbgroot ]]; then
+            usage
+            exit 2
+        fi
+        step0
+        step1
+        step2
+        ;;
+    2)  if (($2 == 0)); then
+            if [[ -z $srcroot ]] || [[ -z $dbgroot ]]; then
+                usage
+                exit 3
+            fi
+            step0
+        elif (($2 == 1)); then
+            step1
+        elif (($2 == 2)); then
+            step2
+        else
+            usage
+            exit 4
+        fi
+        ;;
+    *)
+        usage
+        exit 5
+        ;;
 esac
