@@ -49,21 +49,21 @@ static char arg[COMPILER_OPTS][MAX_ROOT_PATH];
 #define SYSCALL_PREFIX_LEN 9
 
 /* These CXCursorSets are disjoint. */
+
 /*
- * Funcs only: non-included local functions.
+ * Funcs only: non-included local, weak global functions.
  * Keep prototype, remove attributes.
  */
 static CXCursorSet g_non_included;
 /*
- * Funcs only: inlined local, patched functions.
- * Keep all the body, remove attributes.
+ * Inlined local and patched funcs, new var/funcs.
+ * Keep all the body.
+ *
+ * It's not easy to distinguish inlined and new. For now take
+ * them as the same thing. Would there be any attributes of
+ * inlined functions might do bad?
  */
 static CXCursorSet g_func_inlined;
-/*
- * New variables and new functions.
- * Keep all the body.
- */
-static CXCursorSet g_new_varfunc;
 /*
  * Declarations only: type def, forward, extern and
  * non-included local variable declarations.
@@ -131,8 +131,18 @@ static void check_global(CXCursor cusr, struct para_t *para)
         clang_CXCursorSet_insert(g_non_exported, def);
         break;
 
-    case KLPSYM_NOT_FOUND:
-        clang_CXCursorSet_insert(g_new_varfunc, cusr);
+    case KLPSYM_WEAK:
+        /*
+         * For kallsyms weak symbol, we need its position information,
+         * also need its prototype because the arch not define strong
+         * implementation or declaration.
+         */
+        output_klpsym_list(name, 0, para->mod);
+        clang_CXCursorSet_insert(g_non_included, cusr);
+        break;
+
+    case KLPSYM_NOT_FOUND:  /* must be new var/func */
+        clang_CXCursorSet_insert(g_func_inlined, cusr);
         break;
 
     default:    /* KLPSYM_EXPORTED */
@@ -165,7 +175,7 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
         break;
 
     case KLPSYM_NOT_FOUND:
-        clang_CXCursorSet_insert(g_new_varfunc, cusr);
+        clang_CXCursorSet_insert(g_func_inlined, cusr);
         break;
 
     default:    /* >= 0, position */
@@ -306,17 +316,6 @@ static void get_cursor_body(CXCursor cusr, unsigned *start, unsigned *end)
     clang_getSpellingLocation(clang_getRangeEnd(r), NULL, NULL, NULL, end);
 }
 
-/* output all the body, including var initializer */
-static void output_new_varfunc(CXCursor cusr, struct para_t *para)
-{
-    unsigned start, end;
-    get_cursor_body(cusr, &start, &end);
-    fwrite(g_srcbuf + start, 1, end - start, para->fout);
-    if (clang_getCursorKind(cusr) == CXCursor_VarDecl)
-        fprintf(para->fout,";");
-    fprintf(para->fout,"\n\n");
-}
-
 static void output_include(CXCursor cusr, struct para_t *para)
 {
     unsigned start, end;
@@ -374,7 +373,7 @@ static void output_type_def(CXCursor cusr, struct para_t *para)
 }
 
 /*
- * Except the patched func, all others are local(static).
+ * Except the patched and weak func, all others are local(static).
  * Remove all attributes to avoid side-effect.
  * The patched original func might be static, here let it
  * be extern as we separate sources to different compile
@@ -401,7 +400,7 @@ static void output_func_prototype(CXCursor cusr, struct para_t *para,
          * Non-include local is really an extern because
          * the actual symbol is in the running kernel.
          */
-        fprintf(para->fout, "static %s %s", ret_type, name);
+        fprintf(para->fout, "extern %s %s", ret_type, name);
     }
 
     /*
@@ -421,7 +420,8 @@ static void output_func_prototype(CXCursor cusr, struct para_t *para,
     clang_disposeString(id);
 }
 
-static void output_func_body(CXCursor cusr, struct para_t *para)
+/* output all the body, including var initializer */
+static void output_inlined(CXCursor cusr, struct para_t *para)
 {
     unsigned start, end;
     get_cursor_body(cusr, &start, &end);
@@ -435,12 +435,19 @@ static void output_func_body(CXCursor cusr, struct para_t *para)
             break;
         }
 
-    output_func_prototype(cusr, para, is_patched);
-    while (*(g_srcbuf + start) != '{')
-        start++;
-    fprintf(para->fout, "\n");
-    fwrite(g_srcbuf + start, 1, end - start, para->fout);
-    fprintf(para->fout, "\n\n");
+    if (is_patched) {
+        output_func_prototype(cusr, para, is_patched);
+        while (*(g_srcbuf + start) != '{')
+            start++;
+        fprintf(para->fout, "\n");
+        fwrite(g_srcbuf + start, 1, end - start, para->fout);
+        fprintf(para->fout, "\n\n");
+    } else {
+        fwrite(g_srcbuf + start, 1, end - start, para->fout);
+        if (clang_getCursorKind(cusr) == CXCursor_VarDecl)
+            fprintf(para->fout,";");
+        fprintf(para->fout,"\n\n");
+    }
     clang_disposeString(id);
 }
 
@@ -506,9 +513,7 @@ static enum CXChildVisitResult output_cursors(CXCursor cusr,
         if (is_sys)
             output_syscall(cusr, para);
         else
-            output_func_body(cusr, para);
-    } else if (clang_CXCursorSet_contains(g_new_varfunc, cusr)) {
-        output_new_varfunc(cusr, para);
+            output_inlined(cusr, para);
     } else if (clang_CXCursorSet_contains(g_type_def, cusr)) {
         output_type_def(cusr, para);
     } else if (kind == CXCursor_InclusionDirective) {
@@ -577,7 +582,6 @@ static void cleanup_ast(CXIndex index, CXTranslationUnit unit)
 {
     clang_disposeCXCursorSet(g_non_exported);
     clang_disposeCXCursorSet(g_type_def);
-    clang_disposeCXCursorSet(g_new_varfunc);
     clang_disposeCXCursorSet(g_func_inlined);
     clang_disposeCXCursorSet(g_non_included);
     clang_disposeTranslationUnit(unit);
@@ -651,7 +655,6 @@ int main(int argc, char *argv[])
             }
             g_non_included = clang_createCXCursorSet();
             g_func_inlined = clang_createCXCursorSet();
-            g_new_varfunc = clang_createCXCursorSet();
             g_type_def = clang_createCXCursorSet();
             g_non_exported = clang_createCXCursorSet();
             cursor = clang_getTranslationUnitCursor(unit);

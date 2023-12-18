@@ -1,6 +1,6 @@
 # KLPMAKE
 
-目前工具运行只需要一个.patch文件，在x86_64上跑过了这几个示例。
+目前工具运行只需要一个.patch文件，在x86_64、aarch64上跑过了这几个示例。
 
 Inspired by KPATCH @ https://github.com/dynup/kpatch. Many thanks!
 
@@ -51,6 +51,7 @@ sudo klpmake-dir/klpmake -s source-tree-root -b debuginfo-tree-root
 - 未考虑hook问题（klpsrc）
 - 不支持不同源文件的non-included static符号、被补丁函数重名（klpsrc、fixklp）
 - 未考虑KSYM_NAME_LEN（512）符号名长度限制（klpsrc、fixklp）
+- 已知报错`fatal error: '.../include/linux/kconfig.h' file not found`，报警`warning: "..."（macro）redefined`（klpsrc - clang）
 
 工具是在riscv64平台上开发和测试的，刚刚迈出一小步...
 

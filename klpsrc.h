@@ -83,11 +83,13 @@ extern int g_debug;
 int begin_mod_sympos(struct para_t *para, struct src_t *srcs, int src_count);
 void end_mod_sympos(struct para_t *para, int src_count, int end_all);
 
-#define KLPSYM_NON_EXPORTED 1
-#define KLPSYM_EXPORTED 0
-#define KLPSYM_ERROR     -1
+#define KLPSYM_NON_EXPORTED  1
+#define KLPSYM_EXPORTED      0
+#define KLPSYM_ERROR        -1
+/* Weak symbol in kallsyms. They have no prototype. */
+#define KLPSYM_WEAK         -2
 /*
- * Not found symbols in kallsyms.
+ * Not-found symbols in kallsyms.
  * For globals, means they are new.
  * For locals(static), means they are new func/var or inlined functions.
  */

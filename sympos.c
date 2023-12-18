@@ -62,16 +62,19 @@ int non_exported(struct para_t *para, const char *name)
 {
     char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN];
     int found = KLPSYM_NOT_FOUND;
+    char t;
 
     rewind(para->fp);    /* anyway not to rewind? */
     while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
-        sscanf(buf, "%*lx %*c %s", sym);
-        /*
-         * Global symbol must be unique in all scope.
-         * Exported one must has a buddy __ksymtab_SYMBOL.
-         */
-        if (!strcmp(sym, name))
-            found = KLPSYM_NON_EXPORTED;
+        sscanf(buf, "%*lx %c %s", &t, sym);
+        /* global symbol must be unique in all scope */
+        if (!strcmp(sym, name)) {
+            if ((t == 'v') || (t == 'V') || (t == 'w') || (t == 'W'))
+                found = KLPSYM_WEAK;
+            else
+                found = KLPSYM_NON_EXPORTED;
+        }
+        /* exported one must has a buddy __ksymtab_SYMBOL */
         if (!strncmp(sym, EXPORTED_SYM_PREFIX, EXPORTED_SYM_PREFIX_LEN) &&
                 !strcmp(sym + EXPORTED_SYM_PREFIX_LEN, name))
             return KLPSYM_EXPORTED;
@@ -79,6 +82,8 @@ int non_exported(struct para_t *para, const char *name)
 
     if (found == KLPSYM_NOT_FOUND)
         log_debug("not found global symbol: %s in kallsyms\n", name);
+    else if (found == KLPSYM_WEAK)
+        log_debug("found weak symbol: %s in kallsyms\n", name);
     return found;
 }
 
