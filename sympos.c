@@ -194,7 +194,10 @@ static int update_code_range(struct para_t *para)
             Dwarf_Ranges *r;
             Dwarf_Off off;
 
-            /* DW_AT_ranges point to an offset of a specific section */
+            /*
+             * DW_AT_ranges point to an offset to .debug_ranges section.
+             * If there is no such section, shall fallback to .debug_aranges?
+             */
             E(dwarf_global_formref(atlist[i], &off, &err), "");
             E(dwarf_get_ranges_b(para->dbg, off, para->cu[para->src_idx], NULL,
                                         &r, &g_ranges_count, NULL, &err), "");
