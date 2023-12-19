@@ -196,8 +196,12 @@ static enum CXChildVisitResult find_used_recursive(CXCursor cusr,
 {
     /*
      * Due to macro expansion, the cursor might be out of the main
-     * source, but its body might be. So here must not be
+     * source, but its body might be in. So here must not be
      * CXChildVisit_Continue.
+     * And, if the macro defined a static variable outside, broken?!
+     * such as printk_once() defined
+     * `static bool __section(".data.once") __already_done`
+     * in include/linux/once_lite.h.
      */
     if (!is_in_main_src(cusr) || is_done(cusr))
         return CXChildVisit_Recurse;
