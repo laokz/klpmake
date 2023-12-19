@@ -59,6 +59,7 @@ See [example](example/readme.md).
 - not support livepatch source reference original const variable（klpsrc）
 - kernel/module binary must have DWARF4 information, have .debug_info and, .debug_aranges or .debug_ranges section（klpsrc）
 - not considered hooks（klpsrc）
+- not support static variables duplicate name or duplicate with extern varaible in same source（klpsrc）
 - not support duplicate name from different sources' KLPSYMs（klpsrc、fixklp）
 - not considered KSYM_NAME_LEN(512) limits（klpsrc、fixklp）
 - known bug: `fatal error: '.../include/linux/kconfig.h' file not found`, `warning: "..."（macro）redefined`（klpsrc - clang）
