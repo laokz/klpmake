@@ -22,6 +22,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ftw.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <gelf.h>
 #include "klpsrc.h"
 
 /* default kernel Kconfig value */
@@ -194,10 +197,7 @@ static int update_code_range(struct para_t *para)
             Dwarf_Ranges *r;
             Dwarf_Off off;
 
-            /*
-             * DW_AT_ranges point to an offset to .debug_ranges section.
-             * If there is no such section, shall fallback to .debug_aranges?
-             */
+            /* DW_AT_ranges point to an offset to .debug_ranges section */
             E(dwarf_global_formref(atlist[i], &off, &err), "");
             E(dwarf_get_ranges_b(para->dbg, off, para->cu[para->src_idx], NULL,
                                         &r, &g_ranges_count, NULL, &err), "");
@@ -236,21 +236,48 @@ static int update_code_range(struct para_t *para)
     return 0;
 }
 
-int non_included(struct para_t *para, const char *name, int is_var)
+static int query_func_in_aranges(struct para_t *para, Dwarf_Addr addr)
+{
+    Dwarf_Arange ara;
+    Dwarf_Off off;
+    Dwarf_Die die;
+    Dwarf_Error err;
+    char *diename;
+
+    /* match func's compile unit to func's source name */
+    E(dwarf_get_arange(para->arange, para->a_count, addr, &ara, &err), "");
+    E(dwarf_get_cu_die_offset(ara, &off, &err), "");
+    E(dwarf_offdie_b(para->dbg, off, 1, &die, &err), "");
+    E(dwarf_diename(die, &diename, &err), "");
+    if (!strcmp(diename, para->src))
+        return 1;
+    return 0;
+}
+
+static int query_func_in_ranges(struct para_t *para, Dwarf_Addr addr)
 {
     /* record current source code address ranges */
     static char *module = NULL, *source = NULL;
-    if (!is_var && (!module || !source || strcmp(module, para->mod) ||
+    if ((!module || !source || strcmp(module, para->mod) ||
                                         strcmp(source, para->src))) {
         if (update_code_range(para) == KLPSYM_ERROR)
-            return KLPSYM_ERROR;
+            return -1;
         module = para->mod;
         source = para->src;
     }
 
+    for (int i = 0; i < g_ranges_count; i++)
+        if ((addr >= g_ranges[i].lo) && (addr < g_ranges[i].hi))
+            return 1;
+
+    return 0;
+}
+
+int non_included(struct para_t *para, const char *name, int is_var)
+{
     char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN], mod[KALLSYMS_LINE_LEN];
     unsigned long addr;
-    int count, pos;
+    int count, pos, found;
 
     pos = KLPSYM_NOT_FOUND;
     count = 0;
@@ -276,12 +303,15 @@ int non_included(struct para_t *para, const char *name, int is_var)
             if (addr == var_addr)
                 pos = count;
         } else {
-            for (int i = 0; i < g_ranges_count; i++) {
-                if ((addr >= g_ranges[i].lo) && (addr < g_ranges[i].hi)) {
-                    pos = count;
-                    break;
-                }
-            }
+            if (para->arange)   /* the module has no .debug_ranges */
+                found = query_func_in_aranges(para, addr);
+            else
+                found = query_func_in_ranges(para, addr);
+
+            if (found < 0)
+                return KLPSYM_ERROR;
+            else if (found)
+                pos = count;
         }
         count++;
     }
@@ -395,10 +425,48 @@ static int find_cus(struct para_t *para, struct src_t *srcs, int src_count)
     return 0;
 }
 
+#define EE(statement, err_value) do {   \
+    if ((statement) == (err_value)) {   \
+        fprintf(stderr, "ERROR: %s:%d %s", __func__, __LINE__, elf_errmsg(0));\
+        ret = -1;                       \
+        goto out;                       \
+    }                                   \
+} while (0)
+static int has_debug_ranges_sec(char *mod)
+{
+    Elf *relf = NULL;
+    int rfd, ret;
+    size_t sections_nr, shstrtab_index, i;
+    char *name;
+    Elf_Scn *scn = NULL;
+    GElf_Shdr sh;
+
+    EE(rfd = open(mod, O_RDONLY), -1);
+    EE(elf_version(EV_CURRENT), EV_NONE);
+    EE(relf = elf_begin(rfd, ELF_C_READ_MMAP_PRIVATE, NULL), NULL);
+    EE(elf_getshdrnum(relf, &sections_nr), -1);
+    EE(elf_getshdrstrndx(relf, &shstrtab_index), -1);
+    for (i = 1; i < sections_nr; i++) {
+        EE(scn = elf_nextscn(relf, scn), NULL);
+        EE(gelf_getshdr(scn, &sh), NULL);
+        EE(name = elf_strptr(relf, shstrtab_index, sh.sh_name), NULL);
+        if (!strcmp(name, ".debug_ranges"))
+            break;
+    }
+    ret = i != sections_nr;
+
+out:
+    if (relf)
+        elf_end(relf);
+    close(rfd);
+    return ret;
+}
+
 int begin_mod_sympos(struct para_t *para, struct src_t *srcs, int src_count)
 {
     Dwarf_Error err;
     char mod[KALLSYMS_LINE_LEN];
+    int ret;
 
     /* open /proc/kallsyms once */
     if (!para->fp) {
@@ -423,6 +491,17 @@ int begin_mod_sympos(struct para_t *para, struct src_t *srcs, int src_count)
             &para->dbg, &err), "not found DWARF info in %s\n", mod);
     log_debug("%s opened for querying\n", mod);
 
+    /*
+     * If there is no .debug_ranges section in the module, fallback
+     * to .debug_aranges section for .text symbols querying.
+     */
+    ret = has_debug_ranges_sec(mod);
+    if (ret == 0)
+        E(dwarf_get_aranges(para->dbg, &para->arange, &para->a_count, &err),
+            "not found .debug_ranges or .debug_aranges section in %s\n", mod);
+    else if (ret < 0)
+        return KLPSYM_ERROR;
+
     if (find_cus(para, srcs, src_count) < 0)
         return KLPSYM_ERROR;
 
@@ -445,6 +524,10 @@ void end_mod_sympos(struct para_t *para, int src_count, int end_all)
             dwarf_dealloc_die(para->cu[i]);
             para->cu[i] = NULL;
         }
+    if (para->arange) {
+        dwarf_dealloc(para->dbg, para->arange, DW_DLA_LIST);
+        para->arange = NULL;
+    }
     if (para->dbg) {
            (void)dwarf_finish(para->dbg);
         para->dbg = NULL;

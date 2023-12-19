@@ -56,7 +56,7 @@ source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文
 - 只支持一个.patch文件（klpmake、klpsrc）
 - 不支持检测基于ftrace livepatch机制的函数打补丁条件（klpmake、klpsrc）
 - 不支持patched函数及其inlined的被调用者引用原有的const变量（klpsrc）
-- 函数符号只支持在.debug_ranges节查询（klpsrc）
+- 内核/模块二进制必须有DWARF4信息，有.debug_info和，.debug_aranges或.debug_ranges节（klpsrc）
 - 未考虑hook问题（klpsrc）
 - 不支持不同源文件的non-included static符号、被补丁函数重名（klpsrc、fixklp）
 - 未考虑KSYM_NAME_LEN（512）符号名长度限制（klpsrc、fixklp）
