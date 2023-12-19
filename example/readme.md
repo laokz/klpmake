@@ -18,6 +18,8 @@
 
 控制台新增内核日志：hello there!
 
+这个示例在Fedora Linux 39 (Server Edition) x86_64上也测试通过。
+
 ### syscall
 
 补丁来自KPATCH示例。加载使能补丁模块后，`uname -a`输出中带上了“.kpatch”字样。

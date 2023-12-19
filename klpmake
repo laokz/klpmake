@@ -90,6 +90,14 @@ function get_modules()
 {
     local mod bname dir
 
+    # I believe there must be a Makefile under the source root
+    # whether it is kernel or OOT module.
+    # If not, I think this scenario is for kernel target and the
+    # build files were separated to build path by the distributor.
+    if [[ ! -e Makefile ]]; then
+        cd /lib/modules/$(uname -r)/build
+    fi
+
     for s in $1; do
         bname=$(basename $s)
         bname=${bname/%.?/.o}
