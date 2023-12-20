@@ -63,7 +63,6 @@ See [example](example/readme.md).
 - not support static variables duplicate name or duplicate with extern varaible in same source（klpsrc）
 - not support duplicate name from different sources' KLPSYMs（klpsrc、fixklp）
 - not considered KSYM_NAME_LEN(512) limits（klpsrc、fixklp）
-- known bug: `fatal error: '.../include/linux/kconfig.h' file not found`, `warning: "..."（macro）redefined`（klpsrc - clang）
 
 The tool is developed and test on riscv64, and it's just on the first step...
 

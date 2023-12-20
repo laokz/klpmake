@@ -8,6 +8,7 @@
  * type def, forward decl   keep used
  * const                    unsupported
  * var                      keep used declaration, remove attribute
+ *                          non-support function inner static
  * func                     keep used, remove attribute
  *
  * Copyright (c) 2023 laokz <zhangkai@iscas.ac.cn>
@@ -48,7 +49,10 @@ static char arg[COMPILER_OPTS][MAX_ROOT_PATH];
 #define SYSCALL_PREFIX "__do_sys_"
 #define SYSCALL_PREFIX_LEN 9
 
-/* These CXCursorSets are disjoint. */
+/*
+ * These CXCursorSets are disjoint and might contain out-of-main
+ * source entities. Only in-main entities been output.
+ */
 
 /*
  * Funcs only: non-included local, weak global functions.
@@ -77,6 +81,11 @@ static CXCursorSet g_type_def;
  * Only for avoiding duplicate in KLPSYM_LIST.
  */
 static CXCursorSet g_non_exported;
+/*
+ * Already visited cursors.
+ * Only for avoiding dead loop.
+ */
+static CXCursorSet g_visited;
 
 /* whether output debug log */
 int g_debug = 0;
@@ -103,12 +112,9 @@ static void output_klpsym_list(const char *sym, int pos, char *mod)
     system(buf);
 }
 
-static int is_done(CXCursor cusr)
+static inline int is_visited(CXCursor cusr)
 {
-    return  clang_CXCursorSet_contains(g_non_included, cusr) ||
-            clang_CXCursorSet_contains(g_func_inlined, cusr) ||
-            clang_CXCursorSet_contains(g_type_def, cusr) ||
-            clang_CXCursorSet_contains(g_non_exported, cusr);
+    return clang_CXCursorSet_insert(g_visited, cusr) == 0;
 }
 
 /* check a global is exported or not, or a new one */
@@ -118,7 +124,7 @@ static void check_global(CXCursor cusr, struct para_t *para)
     if (clang_Cursor_isNull(def))
         def = cusr;
 
-    if (clang_Cursor_isFunctionInlined(def) || is_done(def))
+    if (is_visited(def))
         return;
 
     CXString string = clang_getCursorSpelling(def);
@@ -161,7 +167,7 @@ static void check_global(CXCursor cusr, struct para_t *para)
  */
 static int check_local(CXCursor cusr, struct para_t *para, int is_var)
 {
-    if (is_done(cusr))
+    if (is_visited(cusr))
         return 0;
 
     CXString string = clang_getCursorSpelling(cusr);
@@ -192,67 +198,107 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
 }
 
 static enum CXChildVisitResult find_used_recursive(CXCursor cusr,
+                        CXCursor parent, CXClientData data);
+
+/* find used type definition and put in if defined in main source */
+static int find_used_type(CXCursor cusr, struct para_t *para)
+{
+    CXCursor def = clang_getCursorDefinition(cusr);
+
+    if (is_in_main_src(def)) {
+        log_debug("visit TypeRef->definition: %s\n",
+                clang_getCString(clang_getCursorDisplayName(def)));
+        clang_CXCursorSet_insert(g_type_def, def);
+        /*
+         * It may use other type-defs. If we didn't visit them now,
+         * that might leave an incomplete type.
+         */
+        if (clang_visitChildren(def, find_used_recursive, para))
+            return 1;
+    }
+    return 0;
+}
+
+/* find used enum type definition according to enumerator reference */
+static void find_used_enum_type(CXCursor cusr)
+{
+    CXCursor def, decl;
+
+    decl = clang_getCursorSemanticParent(cusr);
+    def = clang_getCursorDefinition(decl);
+    if (is_in_main_src(def)) {
+        log_debug("visit DeclRefExpr->EnumConstantDecl->enum definition: %s\n",
+                clang_getCString(clang_getCursorDisplayName(def)));
+        clang_CXCursorSet_insert(g_type_def, def);
+    }
+}
+
+static int find_used_varfunc(CXCursor cusr, struct para_t *para, int is_var)
+{
+    CXCursor def = clang_getCursorDefinition(cusr);
+
+    /* reference to an extern func/var */
+    if (clang_Cursor_isNull(def)) {
+        if (is_in_main_src(cusr)) { /* extern prototype */
+            log_debug("visit DeclRefExpr->Func/VarDecl->extern prototype: %s\n",
+                clang_getCString(clang_getCursorDisplayName(cusr)));
+            clang_CXCursorSet_insert(g_type_def, cusr);
+        }
+        check_global(cusr, para);
+        if (clang_visitChildren(cusr, find_used_recursive, para))
+            return 1;
+        return 0;
+    }
+
+    /* reference to a self or headers defined func/var */
+    if (!clang_equalCursors(cusr, def))    /* forward func declaration */
+        clang_CXCursorSet_insert(g_type_def, cusr);
+    if (clang_getCursorLinkage(def) == CXLinkage_External) {
+        check_global(def, para);
+    } else if (clang_getCursorLinkage(def) == CXLinkage_Internal) {
+        if (check_local(def, para, is_var))
+            return 1;
+    }
+    if (clang_visitChildren(def, find_used_recursive, para))
+        return 1;
+
+    return 0;
+}
+
+/*
+ * Due to macro expansion and include, the cursor might be out
+ * of the main source, but its body might be in, or its referencee
+ * might be KLPSYMs. So here we must visit it even it's out of
+ * the main source.
+ *
+ * And, if the macro defined a static variable outside, broken?!
+ * such as printk_once() defined
+ * `static bool __section(".data.once") __already_done`
+ * in include/linux/once_lite.h.
+ */
+static enum CXChildVisitResult find_used_recursive(CXCursor cusr,
                         CXCursor parent, CXClientData data)
 {
-    /*
-     * Due to macro expansion, the cursor might be out of the main
-     * source, but its body might be in. So here must not be
-     * CXChildVisit_Continue.
-     * And, if the macro defined a static variable outside, broken?!
-     * such as printk_once() defined
-     * `static bool __section(".data.once") __already_done`
-     * in include/linux/once_lite.h.
-     */
-    if (!is_in_main_src(cusr) || is_done(cusr))
-        return CXChildVisit_Recurse;
+    if (is_visited(cusr))
+        return CXChildVisit_Continue;
 
     struct para_t *para = data;
-    CXCursor def, decl;
+    CXCursor decl;
     enum CXCursorKind kind = clang_getCursorKind(cusr);
     switch (kind) {
     case CXCursor_TypeRef:
-        def = clang_getCursorDefinition(cusr);
-        if (is_in_main_src(def)) {
-            clang_CXCursorSet_insert(g_type_def, def);
-            if (clang_visitChildren(def, find_used_recursive, para))
-                return CXChildVisit_Break;
-        }
+        if (find_used_type(cusr, para))
+            return CXChildVisit_Break;
         break;
 
     case CXCursor_DeclRefExpr:
         decl = clang_getCursorReferenced(cusr);
         enum CXCursorKind refkind = clang_getCursorKind(decl);
-
         if (refkind == CXCursor_EnumConstantDecl) {
-            decl = clang_getCursorSemanticParent(decl);
-            def = clang_getCursorDefinition(decl);
-            if (is_in_main_src(def)) {
-                clang_CXCursorSet_insert(g_type_def, def);
-            }
-        }
-
-        if ((refkind != CXCursor_FunctionDecl) && (refkind != CXCursor_VarDecl))
-            break;
-
-        def = clang_getCursorDefinition(decl);
-        if (clang_Cursor_isNull(def)) { /* refer to an extern func/var */
-            if (is_in_main_src(decl)) { /* extern prototype */
-                clang_CXCursorSet_insert(g_type_def, decl);
-            }
-            check_global(decl, para);
-            if (clang_visitChildren(decl, find_used_recursive, para))
-                return CXChildVisit_Break;
-        } else {    /* refer to a self defined func/var */
-            if (!clang_equalCursors(decl, def))    /* forward func declaration */
-                clang_CXCursorSet_insert(g_type_def, decl);
-
-            if (clang_getCursorLinkage(def) == CXLinkage_External) {
-                check_global(def, para);
-            } else if (clang_getCursorLinkage(def) == CXLinkage_Internal) {
-                if (check_local(def, para, refkind == CXCursor_VarDecl))
-                    return CXChildVisit_Break;
-            }
-            if (clang_visitChildren(def, find_used_recursive, para))
+            find_used_enum_type(decl);
+        } else if ((refkind == CXCursor_FunctionDecl) ||
+                   (refkind == CXCursor_VarDecl)) {
+            if (find_used_varfunc(decl, para, refkind == CXCursor_VarDecl))
                 return CXChildVisit_Break;
         }
         break;
@@ -552,8 +598,9 @@ static void fill_compiler_opts(const char *args[])
     sprintf(arg[5], "-I"KERNEL_DEV_ROOT"%s/include/generated/uapi", u.release, ARCH_PATH);
     sprintf(arg[6], "-I"KERNEL_DEV_ROOT"include/uapi", u.release);
     sprintf(arg[7], "-I"KERNEL_DEV_ROOT"include/generated/uapi", u.release);
-    sprintf(arg[8], "-include "KERNEL_DEV_ROOT"include/linux/kconfig.h", u.release);
-    sprintf(arg[9], "-include "KERNEL_DEV_ROOT"include/linux/compiler_types.h", u.release);
+    /* Clang15 think the blank between -include and KERNEL_DEV_ROOT significant?! */
+    sprintf(arg[8], "-include"KERNEL_DEV_ROOT"include/linux/kconfig.h", u.release);
+    sprintf(arg[9], "-include"KERNEL_DEV_ROOT"include/linux/compiler_types.h", u.release);
     sprintf(arg[10], "-D__KERNEL__");
     sprintf(arg[11], "-std=gnu11");
     sprintf(arg[12], "-DMODULE");
@@ -584,6 +631,7 @@ static char *fill_last_compiler_opts(char *root, char *src)
 
 static void cleanup_ast(CXIndex index, CXTranslationUnit unit)
 {
+    clang_disposeCXCursorSet(g_visited);
     clang_disposeCXCursorSet(g_non_exported);
     clang_disposeCXCursorSet(g_type_def);
     clang_disposeCXCursorSet(g_func_inlined);
@@ -661,6 +709,7 @@ int main(int argc, char *argv[])
             g_func_inlined = clang_createCXCursorSet();
             g_type_def = clang_createCXCursorSet();
             g_non_exported = clang_createCXCursorSet();
+            g_visited = clang_createCXCursorSet();
             cursor = clang_getTranslationUnitCursor(unit);
 
             /*
