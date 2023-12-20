@@ -29,7 +29,7 @@
 #include "klpsrc.h"
 
 /* arguments to clang parsing frontend */
-#define COMPILER_OPTS 14
+#define COMPILER_OPTS 15
 #if defined(__aarch64__)
 #define ARCH_PATH "arch/arm64"
 #elif defined(__riscv) && (__riscv_xlen == 64)
@@ -585,7 +585,7 @@ static enum CXChildVisitResult output_cursors(CXCursor cusr,
 }
 
 /* the opts came from `make V=1 modules` output */
-static void fill_compiler_opts(const char *args[])
+static void fill_compiler_opts(const char *args[], char *mod)
 {
     struct utsname u;
     (void)uname(&u);
@@ -604,6 +604,7 @@ static void fill_compiler_opts(const char *args[])
     sprintf(arg[10], "-D__KERNEL__");
     sprintf(arg[11], "-std=gnu11");
     sprintf(arg[12], "-DMODULE");
+    sprintf(arg[13], "-DKBUILD_MODNAME=%s", mod);
     /* the last one is left for internal headers' path */
 
     for (int i = 0; i < COMPILER_OPTS; i++)
@@ -661,7 +662,7 @@ int main(int argc, char *argv[])
     if (parse_arg_and_patch(argc, argv, &patch))
         exit(EXIT_FAILURE);
     const char *args[COMPILER_OPTS];
-    fill_compiler_opts(args);
+    fill_compiler_opts(args, patch.objm);
 
     /* prepare writing the only livepatch main file */
     struct para_t para = {0};
