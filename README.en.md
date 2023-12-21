@@ -35,6 +35,8 @@ sudo klpmake-dir/klpmake -s source-tree-root -b debuginfo-tree-root
 ```
 Source-tree-root is the root directory of source code. Debuginfo-tree-root is the root directory which contains debuginfo files, such as vmlinux, *.ko.debug.
 
+Suggest running klpmake step by step, after each step you can check and verify the result, add hook etc. See tool usage.
+
 ### Genarated Files
 
 - livepatch.c		livepatch main source
@@ -59,7 +61,6 @@ See [example](example/readme.md).
 - not support livepatch source reference original const variable（klpsrc）
 - not support livepatch source original reference of outside macro having static variable definition（klpsrc）
 - kernel/module binary must have DWARF4 information, have .debug_info and, .debug_aranges or .debug_ranges section（klpsrc）
-- not considered hooks（klpsrc）
 - not support static variables duplicate name or duplicate with extern varaible in same source（klpsrc）
 - not support duplicate name from different sources' KLPSYMs（klpsrc、fixklp）
 - not considered KSYM_NAME_LEN(512) limits（klpsrc、fixklp）

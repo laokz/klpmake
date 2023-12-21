@@ -34,6 +34,8 @@ sudo klpmake-dir/klpmake -s source-tree-root -b debuginfo-tree-root
 ```
 source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文件的根目录，如vmlinux、*.ko.debug等。
 
+建议分步执行klpmake，这样可以检查确认每步的结果是否正确是否符合预期，并可以根据需要增加hook功能等。用法见klpmake的Usage。
+
 ### 生成的文件
 
 - livepatch.c		补丁模块主文件
@@ -58,7 +60,6 @@ source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文
 - 不支持patched函数及其inlined的被调用者引用原有的const变量（klpsrc）
 - 不支持patched函数及其inlined的被调用者中原有外部宏有static变量定义（klpsrc）
 - 内核/模块二进制必须有DWARF4信息，有.debug_info和，.debug_aranges或.debug_ranges节（klpsrc）
-- 未考虑hook问题（klpsrc）
 - 不支持同一源文件中的static变量重名或与extern变量重名（klpsrc）
 - 不支持不同源文件的non-included static符号、被补丁函数重名（klpsrc、fixklp）
 - 未考虑KSYM_NAME_LEN（512）符号名长度限制（klpsrc、fixklp）
