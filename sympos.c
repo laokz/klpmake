@@ -134,6 +134,7 @@ static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
     Dwarf_Die kid, d;
     Dwarf_Error err;
     Dwarf_Addr addr = KLPSYM_ERROR;
+    int ret;
 
     /* walkthrough current compile unit's all direct children */
     E(dwarf_child(para->cu[para->src_idx], &kid, &err), "");
@@ -146,8 +147,13 @@ static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
             kid = d;
             continue;
         }
-        E(dwarf_diename(d, &diename, &err), "");
-        if (strcmp(diename, var)) {
+        ret = dwarf_diename(d, &diename, &err);
+        if (ret == DW_DLV_ERROR) {
+            fprintf(stderr, "ERROR: %s:%d %s\n", __func__, __LINE__,
+                                                dwarf_errmsg(err));
+            goto out;
+        /* DW_TAG_variable not always has DW_AT_name attribute, e.g. anonymous */
+        } else if ((ret == DW_DLV_NO_ENTRY) || strcmp(diename, var)) {
             dwarf_dealloc_die(kid);
             kid = d;
             continue;
@@ -170,8 +176,10 @@ static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
         break;
     }
 
-    dwarf_dealloc_die(kid);
     log_debug("search CU variable %s's addr=0x%lx\n", var, addr);
+
+out:
+    dwarf_dealloc_die(kid);
     return addr;
 }
 
