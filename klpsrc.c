@@ -604,7 +604,7 @@ static void fill_compiler_opts(const char *args[], char *mod)
     sprintf(arg[10], "-D__KERNEL__");
     sprintf(arg[11], "-std=gnu11");
     sprintf(arg[12], "-DMODULE");
-    sprintf(arg[13], "-DKBUILD_MODNAME=%s", mod);
+    sprintf(arg[13], "-DKBUILD_MODNAME=\"%s\"", mod);
     /* the last one is left for internal headers' path */
 
     for (int i = 0; i < COMPILER_OPTS; i++)
