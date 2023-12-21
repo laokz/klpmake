@@ -59,7 +59,7 @@ See [example](example/readme.md).
 - only support one .patch file（klpmake、klpsrc）
 - not support ftrace-based livepatch condition detection（klpmake、klpsrc）
 - not support livepatch source reference original const variable（klpsrc）
-- not support livepatch source original reference of outside macro having static variable definition（klpsrc）
+- not support livepatch source have original func-scope static variable（klpsrc）
 - kernel/module binary must have DWARF4 information, have .debug_info and, .debug_aranges or .debug_ranges section（klpsrc）
 - not support static variables duplicate name or duplicate with extern varaible in same source（klpsrc）
 - not support duplicate name from different sources' KLPSYMs（klpsrc、fixklp）
