@@ -699,7 +699,9 @@ int main(int argc, char *argv[])
             }
             index = clang_createIndex(0, 1);
             unit = clang_parseTranslationUnit(index, f, args, COMPILER_OPTS, NULL,
-                         0, CXTranslationUnit_DetailedPreprocessingRecord);
+                         0, CXTranslationUnit_DetailedPreprocessingRecord |
+						    CXTranslationUnit_KeepGoing |
+							CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles);
             if (unit == NULL) {
                 fprintf(stderr, "ERROR: unable to parse %s\n",para.src);
                 clang_disposeIndex(index);
