@@ -159,6 +159,23 @@ static void check_global(CXCursor cusr, struct para_t *para)
     return;
 }
 
+static int is_func_scope(CXCursor cusr)
+{
+    CXCursor parent = clang_getCursorSemanticParent(cusr);
+    CXCursor tu = clang_getTranslationUnitCursor(
+                    clang_Cursor_getTranslationUnit(cusr));
+    CXString name = clang_getCursorDisplayName(cusr);
+    int ret = 0;
+
+    if (!clang_equalCursors(parent, tu)) {
+        fprintf(stderr, "ERROR: not support function scope static: %s at %d\n",
+                        clang_getCString(name), __LINE__);
+        ret = 1;
+    }
+    clang_disposeString(name);
+    return ret;
+}
+
 /*
  * Check a local is included(inlined) or not, or a new one
  *
@@ -185,6 +202,16 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
         break;
 
     default:    /* >= 0, position */
+        /*
+         * Not support non-included static variable defined inner function.
+         *
+         * Here still not detected duplicate names, like __already_done.123?
+         */
+        if (is_var && is_func_scope(cusr)) {
+            ret = -1;
+            break;
+        }
+
         output_klpsym_list(name, pos, para->mod);
         if (is_var)
             clang_CXCursorSet_insert(g_type_def, cusr);
