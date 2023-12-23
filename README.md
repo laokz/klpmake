@@ -57,7 +57,6 @@ source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文
 - 查找修改的函数时，依赖严格的.patch代码模式匹配（klpmake）
 - 只支持一个.patch文件（klpmake、klpsrc）
 - 不支持检测基于ftrace livepatch机制的函数打补丁条件（klpmake、klpsrc）
-- 不支持热补丁代码引用原有的const变量（klpsrc）
 - 不支持热补丁代码保留有原函数内定义的static变量（klpsrc）
 - 内核/模块二进制必须有DWARF4信息，有.debug_info和，.debug_aranges或.debug_ranges节（klpsrc）
 - 不支持同一源文件中的static变量重名或与extern变量重名（klpsrc）

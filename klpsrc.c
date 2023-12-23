@@ -6,7 +6,6 @@
  * include                  keep
  * macro                    keep
  * type def, forward decl   keep used
- * const                    unsupported
  * var                      keep used declaration, remove attribute
  *                          non-support function inner static
  * func                     keep used, remove attribute
