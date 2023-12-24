@@ -375,6 +375,13 @@ static enum CXChildVisitResult find_used(CXCursor cusr,
         if (strcmp(p, para->funcs[i]))
             continue;
 
+        if (clang_Cursor_isVariadic(cusr)) {
+            fprintf(stderr, "ERROR: not support variadic function %s:%s\n",
+                                                     para->src, p);
+            ret = CXChildVisit_Break;
+            goto out;
+        }
+
         if(clang_visitChildren(cusr, find_used_recursive, para)) {
             ret = CXChildVisit_Break;
             goto out;
