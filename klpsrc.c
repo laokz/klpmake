@@ -133,19 +133,24 @@ static int is_patched_func(CXCursor cusr, struct para_t *para)
     return ret;
 }
 
-/* check a global is exported or not, or a new one */
-static void check_global(CXCursor cusr, struct para_t *para, int is_var)
+/*
+ * Check a global is exported or not, or a new one.
+ * return 1 indicate need to recursively visit function's body,
+ * otherwise only need to visit function's arguments.
+ */
+static int check_global(CXCursor cusr, struct para_t *para, int is_var)
 {
     CXCursor def = clang_getCursorDefinition(cusr);
     if (clang_Cursor_isNull(def))
         def = cusr;
     /* changed function left to `find_used` */
     else if (!is_var && is_patched_func(cusr, para))
-        return;
+        return 0;
 
     if (is_visited(def))
-        return;
+        return 0;
 
+    int ret = 0;
     CXString string = clang_getCursorSpelling(def);
     const char *name = clang_getCString(string);
     int result = non_exported(para, name);
@@ -168,6 +173,8 @@ static void check_global(CXCursor cusr, struct para_t *para, int is_var)
 
     case KLPSYM_NOT_FOUND:  /* must be new var/func */
         clang_CXCursorSet_insert(g_func_inlined, cusr);
+        if (!is_var)
+            ret = 1;
         break;
 
     default:    /* KLPSYM_EXPORTED */
@@ -175,7 +182,7 @@ static void check_global(CXCursor cusr, struct para_t *para, int is_var)
     }
     log_debug("check global: %s, result: %d\n", name, result);
     clang_disposeString(string);
-    return;
+    return ret;
 }
 
 static int is_func_scope(CXCursor cusr)
@@ -197,6 +204,8 @@ static int is_func_scope(CXCursor cusr)
 
 /*
  * Check a local is included(inlined) or not, or a new one
+ * return 1 indicate need to recursively visit function's body,
+ * -1 error, otherwise only need to visit function's arguments.
  *
  * Not support different compile units access different non-included
  * same-named symbols. For now, leave this to klpmake to error out.
@@ -218,6 +227,8 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
 
     case KLPSYM_NOT_FOUND:
         clang_CXCursorSet_insert(g_func_inlined, cusr);
+        if (!is_var)
+            ret = 1;
         break;
 
     default:    /* >= 0, position */
@@ -290,23 +301,25 @@ static int find_used_varfunc(CXCursor cusr, struct para_t *para, int is_var)
                 clang_getCString(clang_getCursorDisplayName(cusr)));
             clang_CXCursorSet_insert(g_type_def, cusr);
         }
-        check_global(cusr, para, is_var);
-        if (clang_visitChildren(cusr, find_used_recursive, para))
-            return 1;
+        (void)check_global(cusr, para, is_var);
         return 0;
     }
 
     /* reference to a self or headers defined func/var */
+    int visit_body;
     if (!clang_equalCursors(cusr, def))    /* forward func declaration */
         clang_CXCursorSet_insert(g_type_def, cusr);
     if (clang_getCursorLinkage(def) == CXLinkage_External) {
-        check_global(def, para, is_var);
+        visit_body = check_global(def, para, is_var);
     } else if (clang_getCursorLinkage(def) == CXLinkage_Internal) {
-        if (check_local(def, para, is_var))
+        visit_body = check_local(def, para, is_var);
+        if (visit_body == -1)
             return 1;
     }
-    if (clang_visitChildren(def, find_used_recursive, para))
-        return 1;
+    if (visit_body == 1) {
+        if (clang_visitChildren(def, find_used_recursive, para))
+            return 1;
+    }
 
     return 0;
 }
