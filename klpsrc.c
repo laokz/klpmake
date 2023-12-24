@@ -111,17 +111,37 @@ static void output_klpsym_list(const char *sym, int pos, char *mod)
     system(buf);
 }
 
+/* insert into visited set and test if already in there */
 static inline int is_visited(CXCursor cusr)
 {
     return clang_CXCursorSet_insert(g_visited, cusr) == 0;
 }
 
+static int is_patched_func(CXCursor cusr, struct para_t *para)
+{
+    int ret = 0;
+    CXString string = clang_getCursorSpelling(cusr);
+    const char *p = clang_getCString(string);
+
+    for (int i = 0; i < para->func_count; i++)
+        if (!strcmp(p, para->funcs[i])) {
+            ret = 1;
+            break;
+        }
+
+    clang_disposeString(string);
+    return ret;
+}
+
 /* check a global is exported or not, or a new one */
-static void check_global(CXCursor cusr, struct para_t *para)
+static void check_global(CXCursor cusr, struct para_t *para, int is_var)
 {
     CXCursor def = clang_getCursorDefinition(cusr);
     if (clang_Cursor_isNull(def))
         def = cusr;
+    /* changed function left to `find_used` */
+    else if (!is_var && is_patched_func(cusr, para))
+        return;
 
     if (is_visited(def))
         return;
@@ -183,7 +203,7 @@ static int is_func_scope(CXCursor cusr)
  */
 static int check_local(CXCursor cusr, struct para_t *para, int is_var)
 {
-    if (is_visited(cusr))
+    if (is_visited(cusr) || (!is_var && is_patched_func(cusr, para)))
         return 0;
 
     CXString string = clang_getCursorSpelling(cusr);
@@ -270,7 +290,7 @@ static int find_used_varfunc(CXCursor cusr, struct para_t *para, int is_var)
                 clang_getCString(clang_getCursorDisplayName(cusr)));
             clang_CXCursorSet_insert(g_type_def, cusr);
         }
-        check_global(cusr, para);
+        check_global(cusr, para, is_var);
         if (clang_visitChildren(cusr, find_used_recursive, para))
             return 1;
         return 0;
@@ -280,7 +300,7 @@ static int find_used_varfunc(CXCursor cusr, struct para_t *para, int is_var)
     if (!clang_equalCursors(cusr, def))    /* forward func declaration */
         clang_CXCursorSet_insert(g_type_def, cusr);
     if (clang_getCursorLinkage(def) == CXLinkage_External) {
-        check_global(def, para);
+        check_global(def, para, is_var);
     } else if (clang_getCursorLinkage(def) == CXLinkage_Internal) {
         if (check_local(def, para, is_var))
             return 1;
@@ -507,14 +527,7 @@ static void output_inlined(CXCursor cusr, struct para_t *para)
     unsigned start, end;
     get_cursor_body(cusr, &start, &end);
 
-    int is_patched = 0;
-    CXString id = clang_getCursorSpelling(cusr);
-    const char *func_name = clang_getCString(id);
-    for (int i = 0; i < para->func_count; i++)
-        if (!strcmp(func_name, para->funcs[i])) {
-            is_patched = 1;
-            break;
-        }
+    int is_patched = is_patched_func(cusr, para);
 
     if (is_patched) {
         output_func_prototype(cusr, para, is_patched);
@@ -529,7 +542,6 @@ static void output_inlined(CXCursor cusr, struct para_t *para)
             fprintf(para->fout,";");
         fprintf(para->fout,"\n\n");
     }
-    clang_disposeString(id);
 }
 
 static void output_syscall(CXCursor cusr, struct para_t *para)
