@@ -437,9 +437,14 @@ static void output_type_def(CXCursor cusr, struct para_t *para)
          * attributes and initializer to avoid unintended side-effect.
          */
         CXString id = clang_getCursorSpelling(cusr);
-        CXString type = clang_getTypeSpelling(clang_getCursorType(cusr));
-        fprintf(para->fout, "extern %s %s;\n\n", clang_getCString(type),
-                                                 clang_getCString(id));
+        CXType ty = clang_getCursorType(cusr);
+        int is_array = (ty.kind ==  CXType_VariableArray) ||
+                       (ty.kind == CXType_ConstantArray);
+        if (is_array)
+            ty = clang_getArrayElementType(ty);
+        CXString type = clang_getTypeSpelling(ty);
+        fprintf(para->fout, "extern %s %s%s;\n\n", clang_getCString(type),
+                                clang_getCString(id), is_array ? "[]" : "");
         clang_disposeString(type);
         clang_disposeString(id);
     } else {
