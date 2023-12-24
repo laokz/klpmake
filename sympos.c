@@ -70,12 +70,15 @@ int non_exported(struct para_t *para, const char *name)
     rewind(para->fp);    /* anyway not to rewind? */
     while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
         sscanf(buf, "%*lx %c %s", &t, sym);
-        /* global symbol must be unique in all scope */
+        /* global symbol must be unique in all scope, maybe not? */
         if (!strcmp(sym, name)) {
             if ((t == 'v') || (t == 'V') || (t == 'w') || (t == 'W'))
                 found = KLPSYM_WEAK;
-            else
+            else if ((t >= 'A') && (t <= 'Z'))
                 found = KLPSYM_NON_EXPORTED;
+            else
+                /* ever saw two same name in kallsyms, one is T, another is t */
+                log_debug("WARNING: found '%c' typed global: %s in kallsyms\n", t, name);
         }
         /* exported one must has a buddy __ksymtab_SYMBOL */
         if (!strncmp(sym, EXPORTED_SYM_PREFIX, EXPORTED_SYM_PREFIX_LEN) &&
@@ -286,15 +289,17 @@ int non_included(struct para_t *para, const char *name, int is_var)
     char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN], mod[KALLSYMS_LINE_LEN];
     unsigned long addr;
     int count, pos, found;
+    char t;
 
     pos = KLPSYM_NOT_FOUND;
     count = 0;
     rewind(para->fp);
     while (fgets(buf, KALLSYMS_LINE_LEN, para->fp)) {
         mod[0] = '\0';
-        sscanf(buf, "%lx %*c %s [%[^]]]\n", &addr, sym, mod);
+        sscanf(buf, "%lx %c %s [%[^]]]\n", &addr, &t, sym, mod);
         if ((mod[0] == '\0') && strcmp(para->mod, "vmlinux") ||
-            (mod[0] != '\0') && strcmp(mod, para->mod) || strcmp(sym, name))
+            (mod[0] != '\0') && strcmp(mod, para->mod) ||
+                            strcmp(sym, name) || (t < 'a'))
             continue;
 
         /* already matched, just count duplicate */
