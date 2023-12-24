@@ -476,12 +476,6 @@ static void output_type_def(CXCursor cusr, struct para_t *para)
 /*
  * Except the patched and weak func, all others are local(static).
  * Remove all attributes to avoid side-effect.
- * The patched original func might be static, here let it
- * be extern as we separate sources to different compile
- * unit. If namespace conflict concerned, maybe could
- * mangle the name?
- *
- * Here also output patched func prototype to klp main src.
  */
 static void output_func_prototype(CXCursor cusr, struct para_t *para,
                                                         int is_patched)
@@ -494,8 +488,14 @@ static void output_func_prototype(CXCursor cusr, struct para_t *para,
     get_cursor_body(cusr, &start, &end);
 
     if (is_patched) {
-        fprintf(para->fout, "%s %s%s", ret_type, PATCHED_FUNC_PREFIX, name);
-        fprintf(para->fmain, "extern %s %s%s", ret_type, PATCHED_FUNC_PREFIX, name);
+        /*
+         * Keep patched func original linkage even it is external.
+         * It seems linker could auto translate it to local symbol type
+         * to avoid global namespace pollution?
+         */
+        fprintf(para->fout, "%s%s %s",
+            clang_getCursorLinkage(cusr) == CXLinkage_Internal ? "static " : "",
+            ret_type, name);
     } else {
         /*
          * Non-include local is really an extern because
@@ -513,12 +513,73 @@ static void output_func_prototype(CXCursor cusr, struct para_t *para,
     p = strchr(q, '(');
     q = strchr(p, ')');
     fwrite(p, 1, q - p + 1, para->fout);
-    if (is_patched) {
-        fwrite(p, 1, q - p + 1, para->fmain);
-        fprintf(para->fmain, ";\n");
-    }
+
     clang_disposeString(type);
     clang_disposeString(id);
+}
+
+/*
+ * There might be multiple patched funcs and they might call each other.
+ * Keep the patched func names untouched so keep the calling logic.
+ * Add wrappers to each of them for `struct klp_func`.
+ *
+ * All wrappers set to `extern` linkage because we separate sources
+ * to different compile units. If namespace conflicts still concerned,
+ * maybe could mangle the name?
+ *
+ * Here also output wrappers prototype to klp main src.
+ */
+static void output_patched_wrapper(CXCursor cusr, struct para_t *para)
+{
+    CXString func = clang_getCursorSpelling(cusr);
+    CXType ret_ty = clang_getCursorResultType(cusr);
+    int is_ret_void = ret_ty.kind == CXType_Void;
+    CXString type = clang_getTypeSpelling(ret_ty);
+    const char *func_name = clang_getCString(func);
+    const char *type_name = clang_getCString(type);
+
+    /* declaration */
+    fprintf(para->fout, "%s %s%s(", type_name, PATCHED_FUNC_PREFIX, func_name);
+    fprintf(para->fmain, "extern %s %s%s(", type_name, PATCHED_FUNC_PREFIX,
+                                                                func_name);
+    clang_disposeString(type);
+    int n = clang_Cursor_getNumArguments(cusr);
+    if (n == 0) {
+        fprintf(para->fout, "void)\n{\n\t%s%s();}\n", is_ret_void ?
+                                        "" : "return ", func_name);
+        fprintf(para->fmain, "void);\n");
+        clang_disposeString(func);
+        return;
+    }
+
+    /* body */
+    CXString *args = malloc(n * sizeof(CXString));
+    if (!args) {
+        perror("malloc");
+        clang_disposeString(func);
+        return;
+    }
+    CXCursor arg_cusr;
+    const char *name;
+    for (int i = 0; i < n; i++) {
+        arg_cusr = clang_Cursor_getArgument(cusr, i);
+        args[i] = clang_getCursorSpelling(arg_cusr);
+        name = clang_getCString(args[i]);
+        type = clang_getTypeSpelling(clang_getCursorType(arg_cusr));
+        type_name = clang_getCString(type);
+        fprintf(para->fout, "%s%s %s", i ? ", " : "", type_name, name);
+        fprintf(para->fmain, "%s%s %s", i ? ", " : "", type_name, name);
+        clang_disposeString(type);
+    }
+    fprintf(para->fout, ")\n{\n\t%s%s(", is_ret_void ? "" : "return ", func_name);
+    for (int i = 0; i < n; i++) {
+        fprintf(para->fout, "%s%s", i ? ", " : "", clang_getCString(args[i]));
+        clang_disposeString(args[i]);
+    }
+    fprintf(para->fout, ");\n}\n\n");
+    fprintf(para->fmain, ");\n");
+    free(args);
+    clang_disposeString(func);
 }
 
 /* output all the body, including var initializer */
@@ -536,6 +597,7 @@ static void output_inlined(CXCursor cusr, struct para_t *para)
         fprintf(para->fout, "\n");
         fwrite(g_srcbuf + start, 1, end - start, para->fout);
         fprintf(para->fout, "\n\n");
+        output_patched_wrapper(cusr, para);
     } else {
         fwrite(g_srcbuf + start, 1, end - start, para->fout);
         if (clang_getCursorKind(cusr) == CXCursor_VarDecl)
