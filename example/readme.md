@@ -1,6 +1,4 @@
-以下示例在openEuler 23.09 kernel 6.4.0-10.1.0.20，启用CONFIG_LIVEPATCH_WO_FTRACE热补丁机制的x86_64、aarch64、riscv64平台上进行了测试验证。
-
-注意：补丁模块引用了jump_label中的符号时会崩溃，如aarch64上的netlink示例，具体原因待查。表现是插入补丁模块时，在注册jump_label节中符号阶段，内核写了只读内存。
+以下示例在openEuler 23.09 kernel 6.4.0-10.1.0.20，启用CONFIG_LIVEPATCH_WO_FTRACE热补丁机制的x86_64、aarch64、riscv64平台上进行了测试验证。test.sh是自动化测试所有示例的脚本。
 
 ### netlink
 
@@ -23,5 +21,13 @@
 ### syscall
 
 补丁来自KPATCH示例。加载使能补丁模块后，`uname -a`输出中带上了“.kpatch”字样。
+
+### roinit
+
+修复加载有jump_table节符号的补丁模块时崩溃问题（aarch64上netlink示例）。
+
+### gmemtest
+
+原始补丁：[bug fixes for gmem](https://gitee.com/openeuler/kernel/commit/3511eb3f5f3dbfb53410e5a116748da847338d7c)。
 
 以上示例均没有kallsyms中同名符号的情况，以后遇到再补上。
