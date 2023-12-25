@@ -64,6 +64,12 @@ source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文
 - 不支持不同源文件的non-included static符号、被补丁函数重名（klpsrc、fixklp）
 - 未考虑KSYM_NAME_LEN（512）符号名长度限制（klpsrc、fixklp）
 
+##### 关于DWARF信息
+
+社区有对DWARF信息可靠性的担心，这里列出klpmake用到的：
+- 定位函数符号：DW_TAG_compile_unit的DW_AT_name、DW_AT_low_pc、DW_AT_high_pc、DW_AT_ranges
+- 定位变量符号：DW_TAG_variable的DW_AT_name、DW_AT_location、DW_AT_const_value(未来）、DW_AT_decl_line（未来）
+
 工具是在riscv64平台上开发和测试的，刚刚迈出一小步...
 
 非常期待你的试用与反馈！非常欢迎hacker来指点贡献！
