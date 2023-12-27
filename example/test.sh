@@ -1,7 +1,7 @@
 #!/bin/bash
 
 LOCALE=C
-trap catcherr ERR 
+trap catcherr ERR
 
 declare -i errors=0
 function catcherr()
@@ -41,7 +41,7 @@ for ((i=0; i<${#tests[@]}; i++)); do
 	eval $cmd
 	count=$(cat _klpmake.syms 2>/dev/null|wc -l)
 	if ((count != expect_klpsyms[i])); then
-		echo "ERROR: unexpectd KLPSYMs of ${test[i]}"
+		echo "ERROR: unexpectd KLPSYMs of ${tests[i]}"
 		((++errors))
 	fi
 	insmod ${tests[i]}.ko
