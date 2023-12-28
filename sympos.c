@@ -24,7 +24,6 @@
 #include <ftw.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <gelf.h>
 #include "klpsrc.h"
 
 /* default kernel Kconfig value */
@@ -132,7 +131,7 @@ static Dwarf_Addr get_location_addr(Dwarf_Attribute attr)
     return opd1;
 }
 
-static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
+static Dwarf_Addr get_addr(struct para_t *para, const char *name, int is_var)
 {
     Dwarf_Die kid, d;
     Dwarf_Error err;
@@ -145,7 +144,8 @@ static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
         Dwarf_Half tag;
         char *diename;
         E(dwarf_tag(d, &tag, &err), "");
-        if (tag != DW_TAG_variable) {
+        if ((is_var && (tag != DW_TAG_variable)) ||
+           (!is_var && (tag != DW_TAG_subprogram))) {
             dwarf_dealloc_die(kid);
             kid = d;
             continue;
@@ -155,133 +155,59 @@ static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
             fprintf(stderr, "ERROR: %s:%d %s\n", __func__, __LINE__,
                                                 dwarf_errmsg(err));
             goto out;
-        /* DW_TAG_variable not always has DW_AT_name attribute, e.g. anonymous */
-        } else if ((ret == DW_DLV_NO_ENTRY) || strcmp(diename, var)) {
+        /*
+         * DW_TAG_variable not always has DW_AT_name attribute, its
+         * name might be at another tag's DW_AT_specification.
+         * Mostly this is a global variable???
+         *
+         * DW_TAG_subprogram always has a DW_AT_name.
+         */
+        } else if ((ret == DW_DLV_NO_ENTRY) || strcmp(diename, name)) {
             dwarf_dealloc_die(kid);
             kid = d;
             continue;
         }
 
-        Dwarf_Signed atcount;
-        Dwarf_Attribute *atlist;
-        E(dwarf_attrlist(d, &atlist, &atcount, &err), "");
-        for (int i = 0; i < atcount; ++i) {
-            Dwarf_Half attrnum = 0;
-            const char *attrname = 0;
-            E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
-            if (attrnum == DW_AT_location)
-                addr = get_location_addr(atlist[i]);
-                /* without break to allow dealloc all attrs? */
-            dwarf_dealloc_attribute(atlist[i]);
+        if (is_var) {
+            Dwarf_Signed atcount;
+            Dwarf_Attribute *atlist;
+            E(dwarf_attrlist(d, &atlist, &atcount, &err), "");
+            for (int i = 0; i < atcount; ++i) {
+                Dwarf_Half attrnum = 0;
+                const char *attrname = 0;
+                E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
+                if (attrnum == DW_AT_location)
+                    addr = get_location_addr(atlist[i]);
+                    /* without break to allow dealloc all attrs? */
+                dwarf_dealloc_attribute(atlist[i]);
+            }
+            dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
+        } else {
+            ret = dwarf_lowpc(d, &addr, &err);
+            if (ret == DW_DLV_ERROR) {
+                fprintf(stderr, "ERROR: %s:%d %s\n", __func__, __LINE__,
+                                                dwarf_errmsg(err));
+                goto out;
+            } if (ret == DW_DLV_NO_ENTRY) {
+                /*
+                 * The name is matched, but there is no lowpc, that means
+                 * this is an inlined function from header not found,
+                 * give an illegal address.
+                 */
+                addr = (Dwarf_Addr)NULL;
+            }
         }
-        dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
+
         dwarf_dealloc_die(d);
         break;
     }
 
-    log_debug("search CU variable %s's addr=0x%lx\n", var, addr);
+    log_debug("search CU %s %s's addr=0x%lx\n",
+                is_var ? "variable" : "function", name, addr);
 
 out:
     dwarf_dealloc_die(kid);
     return addr;
-}
-
-/* current compile unit .text address ranges array */
-#define CU_RANGES_MAX 20
-static struct {
-    Dwarf_Addr lo;
-    Dwarf_Addr hi;
-} g_ranges[CU_RANGES_MAX];
-static Dwarf_Signed g_ranges_count;
-
-static int update_code_range(struct para_t *para)
-{
-    Dwarf_Signed atcount;
-    Dwarf_Attribute *atlist;
-    Dwarf_Half attrnum = 0;
-    Dwarf_Error err;
-
-    E(dwarf_attrlist(para->cu[para->src_idx], &atlist, &atcount, &err), "");
-    for (int i = 0; i < atcount; ++i) {
-        E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
-        if (attrnum == DW_AT_ranges) {  /* non-continuous address ranges */
-            Dwarf_Ranges *r;
-            Dwarf_Off off;
-
-            /* DW_AT_ranges point to an offset to .debug_ranges section */
-            E(dwarf_global_formref(atlist[i], &off, &err), "");
-            E(dwarf_get_ranges_b(para->dbg, off, para->cu[para->src_idx], NULL,
-                                        &r, &g_ranges_count, NULL, &err), "");
-            if (g_ranges_count > CU_RANGES_MAX) {
-                /* don't error out as the found ranges might be enough */
-                fprintf(stderr, "ERROR: %s code address ranges count larger than %s\n",
-                                                     para->src, CU_RANGES_MAX);
-            }
-            /* here not check FORM and RANGE kind? */
-            for(int k = 0; k < g_ranges_count; k++) {
-                g_ranges[k].lo = r[k].dwr_addr1;
-                g_ranges[k].hi = r[k].dwr_addr2;
-                log_debug("%s code address range%d: 0x%lx - 0x%lx\n", para->src,
-                                            k, g_ranges[k].lo, g_ranges[k].hi);
-            }
-            dwarf_dealloc_ranges(para->dbg, r, g_ranges_count);
-            break;
-        } else if (attrnum == DW_AT_low_pc) {   /* single continuous address range */
-            Dwarf_Half form = 0;
-            enum Dwarf_Form_Class formclass = DW_FORM_CLASS_UNKNOWN;
-            g_ranges_count = 1;
-            E(dwarf_lowpc(para->cu[para->src_idx], &g_ranges[0].lo, &err), "");
-            /* highpc might be an address, or an offset to lowpc */
-            E(dwarf_highpc_b(para->cu[para->src_idx], &g_ranges[0].hi, &form,
-                                                        &formclass, &err), "");
-            if ((form != DW_FORM_addr) && !dwarf_addr_form_is_indexed(form)) {
-                g_ranges[0].hi += g_ranges[0].lo;
-            }
-            log_debug("%s code address range: 0x%lx - 0x%lx\n", para->src,
-                                            g_ranges[0].lo, g_ranges[0].hi);
-            break;
-        }
-        dwarf_dealloc_attribute(atlist[i]);
-    }
-    dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
-    return 0;
-}
-
-static int query_func_in_aranges(struct para_t *para, Dwarf_Addr addr)
-{
-    Dwarf_Arange ara;
-    Dwarf_Off off;
-    Dwarf_Die die;
-    Dwarf_Error err;
-    char *diename;
-
-    /* match func's compile unit to func's source name */
-    E(dwarf_get_arange(para->arange, para->a_count, addr, &ara, &err), "");
-    E(dwarf_get_cu_die_offset(ara, &off, &err), "");
-    E(dwarf_offdie_b(para->dbg, off, 1, &die, &err), "");
-    E(dwarf_diename(die, &diename, &err), "");
-    if (!strcmp(diename, para->src))
-        return 1;
-    return 0;
-}
-
-static int query_func_in_ranges(struct para_t *para, Dwarf_Addr addr)
-{
-    /* record current source code address ranges */
-    static char *module = NULL, *source = NULL;
-    if ((!module || !source || strcmp(module, para->mod) ||
-                                        strcmp(source, para->src))) {
-        if (update_code_range(para) == KLPSYM_ERROR)
-            return -1;
-        module = para->mod;
-        source = para->src;
-    }
-
-    for (int i = 0; i < g_ranges_count; i++)
-        if ((addr >= g_ranges[i].lo) && (addr < g_ranges[i].hi))
-            return 1;
-
-    return 0;
 }
 
 int non_included(struct para_t *para, const char *name, int is_var)
@@ -309,23 +235,16 @@ int non_included(struct para_t *para, const char *name, int is_var)
         }
 
         addr -= para->koffset;
-        if (is_var) {
-            unsigned long var_addr = get_var_addr(para, name);
-            if (var_addr == KLPSYM_ERROR)
-                return KLPSYM_ERROR;
-            if (addr == var_addr)
-                pos = count;
-        } else {
-            if (para->arange)   /* the module has no .debug_ranges */
-                found = query_func_in_aranges(para, addr);
-            else
-                found = query_func_in_ranges(para, addr);
-
-            if (found < 0)
-                return KLPSYM_ERROR;
-            else if (found)
-                pos = count;
-        }
+        unsigned long _addr = get_addr(para, name, is_var);
+        if (_addr == KLPSYM_ERROR)
+            return KLPSYM_ERROR;
+        /*
+         * Found non-consistent function address between DWARF
+         * and kallsyms. Function is a block, variable is a
+         * point. Loose the function compare condition!?
+         */
+        if ((is_var && (addr == _addr)) || (!is_var && _addr))
+            pos = count;
         count++;
     }
 
@@ -438,43 +357,6 @@ static int find_cus(struct para_t *para, struct src_t *srcs, int src_count)
     return 0;
 }
 
-#define EE(statement, err_value) do {   \
-    if ((statement) == (err_value)) {   \
-        fprintf(stderr, "ERROR: %s:%d %s", __func__, __LINE__, elf_errmsg(0));\
-        ret = -1;                       \
-        goto out;                       \
-    }                                   \
-} while (0)
-static int has_debug_ranges_sec(char *mod)
-{
-    Elf *relf = NULL;
-    int rfd, ret;
-    size_t sections_nr, shstrtab_index, i;
-    char *name;
-    Elf_Scn *scn = NULL;
-    GElf_Shdr sh;
-
-    EE(rfd = open(mod, O_RDONLY), -1);
-    EE(elf_version(EV_CURRENT), EV_NONE);
-    EE(relf = elf_begin(rfd, ELF_C_READ_MMAP_PRIVATE, NULL), NULL);
-    EE(elf_getshdrnum(relf, &sections_nr), -1);
-    EE(elf_getshdrstrndx(relf, &shstrtab_index), -1);
-    for (i = 1; i < sections_nr; i++) {
-        EE(scn = elf_nextscn(relf, scn), NULL);
-        EE(gelf_getshdr(scn, &sh), NULL);
-        EE(name = elf_strptr(relf, shstrtab_index, sh.sh_name), NULL);
-        if (!strcmp(name, ".debug_ranges"))
-            break;
-    }
-    ret = i != sections_nr;
-
-out:
-    if (relf)
-        elf_end(relf);
-    close(rfd);
-    return ret;
-}
-
 int begin_mod_sympos(struct para_t *para, struct src_t *srcs, int src_count)
 {
     Dwarf_Error err;
@@ -504,17 +386,6 @@ int begin_mod_sympos(struct para_t *para, struct src_t *srcs, int src_count)
             &para->dbg, &err), "not found DWARF info in %s\n", mod);
     log_debug("%s opened for querying\n", mod);
 
-    /*
-     * If there is no .debug_ranges section in the module, fallback
-     * to .debug_aranges section for .text symbols querying.
-     */
-    ret = has_debug_ranges_sec(mod);
-    if (ret == 0)
-        E(dwarf_get_aranges(para->dbg, &para->arange, &para->a_count, &err),
-            "not found .debug_ranges or .debug_aranges section in %s\n", mod);
-    else if (ret < 0)
-        return KLPSYM_ERROR;
-
     if (find_cus(para, srcs, src_count) < 0)
         return KLPSYM_ERROR;
 
@@ -537,10 +408,6 @@ void end_mod_sympos(struct para_t *para, int src_count, int end_all)
             dwarf_dealloc_die(para->cu[i]);
             para->cu[i] = NULL;
         }
-    if (para->arange) {
-        dwarf_dealloc(para->dbg, para->arange, DW_DLA_LIST);
-        para->arange = NULL;
-    }
     if (para->dbg) {
            (void)dwarf_finish(para->dbg);
         para->dbg = NULL;

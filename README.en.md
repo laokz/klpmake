@@ -60,7 +60,7 @@ See [example](example/readme.md).
 - not support ftrace-based livepatch condition detection（klpmake、klpsrc）
 - not support livepatch source have original func-scope static variable（klpsrc）
 - not support patch variadic function（klpsrc）
-- kernel/module binary must have DWARF4 information, have .debug_info and, .debug_aranges or .debug_ranges section（klpsrc）
+- kernel/module binary must have DWARF4 information, have .debug_info section（klpsrc）
 - not support static variables duplicate name or duplicate with extern varaible in same source（klpsrc）
 - not support duplicate name from different sources' KLPSYMs（klpsrc、fixklp）
 - not considered KSYM_NAME_LEN(512) limits（klpsrc、fixklp）
@@ -68,8 +68,9 @@ See [example](example/readme.md).
 +##### About DWARF information
 
 There is concern about the reliability of DWARF information. Here list klpmake used:
-- locating function symbol: DW_TAG_compile_unit DW_AT_name, DW_AT_low_pc, DW_AT_high_pc, DW_AT_ranges
-- locating variable symbol: DW_TAG_variable DW_AT_name, DW_AT_location, DW_AT_const_value(future), DW_AT_decl_line(future)
+- locating source: DW_TAG_compile_unit DW_AT_name
+- locating function symbol: DW_TAG_subprogram DW_AT_name, DW_AT_low_pc, DW_AT_decl_line(future)
+- locating variable symbol: DW_TAG_variable DW_AT_name, DW_AT_location, DW_AT_decl_line(future), DW_AT_const_value(future)
 
 The tool is developed and test on riscv64, and it's just on the first step...
 

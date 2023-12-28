@@ -59,7 +59,7 @@ source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文
 - 不支持检测基于ftrace livepatch机制的函数打补丁条件（klpmake、klpsrc）
 - 不支持热补丁代码保留有原函数内定义的static变量（klpsrc）
 - 不支持对可变参数的函数打补丁（klpsrc）
-- 内核/模块二进制必须有DWARF4信息，有.debug_info和，.debug_aranges或.debug_ranges节（klpsrc）
+- 内核/模块二进制必须有DWARF4信息，有.debug_info节（klpsrc）
 - 不支持同一源文件中的static变量重名或与extern变量重名（klpsrc）
 - 不支持不同源文件的non-included static符号、被补丁函数重名（klpsrc、fixklp）
 - 未考虑KSYM_NAME_LEN（512）符号名长度限制（klpsrc、fixklp）
@@ -67,8 +67,9 @@ source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文
 ##### 关于DWARF信息
 
 社区有对DWARF信息可靠性的担心，这里列出klpmake用到的：
-- 定位函数符号：DW_TAG_compile_unit的DW_AT_name、DW_AT_low_pc、DW_AT_high_pc、DW_AT_ranges
-- 定位变量符号：DW_TAG_variable的DW_AT_name、DW_AT_location、DW_AT_const_value(未来）、DW_AT_decl_line（未来）
+- 定位源文件：DW_TAG_compile_unit的DW_AT_name
+- 定位函数符号：DW_TAG_subprogram的DW_AT_name、DW_AT_low_pc、DW_AT_decl_line（未来）
+- 定位变量符号：DW_TAG_variable的DW_AT_name、DW_AT_location、DW_AT_decl_line（未来）、DW_AT_const_value（未来）
 
 工具是在riscv64平台上开发和测试的，刚刚迈出一小步...
 
