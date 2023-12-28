@@ -67,6 +67,12 @@ struct para_t {
     Dwarf_Debug dbg;
     Dwarf_Die cu[MAX_SRCS]; /* Libdwarf only support one pass CUs searching.
                                When begin_mod_sympos, find them all once. */
+    Dwarf_Arange *arange;   /* When the targeted module has no .debug_ranges
+                               section, we cannot use CU to query address.
+                               Instead, fallback to .debug_aranges section
+                               using this member, and it also act as a flag
+                               to this scenario. */
+    Dwarf_Signed a_count;
 
     /* for all */
     FILE *fp;       /* /proc/kallsyms */
