@@ -62,8 +62,7 @@ static CXCursorSet g_non_included;
  * Inlined local and patched funcs, new var/funcs.
  * Keep all the body.
  *
- * It's not easy to distinguish inlined and new. For now take
- * them as the same thing. Would there be any attributes of
+ * For now keep them in the same set. Would there be any attributes of
  * inlined functions might do bad?
  */
 static CXCursorSet g_func_inlined;
@@ -185,26 +184,107 @@ static int check_global(CXCursor cusr, struct para_t *para, int is_var)
     return ret;
 }
 
-static int is_func_scope(CXCursor cusr)
+/*
+ * Return variable defined scope in patched source, either file scope which
+ * return NULL, or function scope which return function name(strdup).
+ */
+static char* get_var_scope(CXCursor cusr)
 {
-    CXCursor parent = clang_getCursorSemanticParent(cusr);
-    CXCursor tu = clang_getTranslationUnitCursor(
-                    clang_Cursor_getTranslationUnit(cusr));
-    CXString name = clang_getCursorDisplayName(cusr);
-    int ret = 0;
+    CXCursor parent = cusr;
+    CXType type;
+    CXString scope;
+    char *p;
 
-    if (!clang_equalCursors(parent, tu)) {
-        fprintf(stderr, "ERROR: not support function scope static: %s at %d\n",
-                        clang_getCString(name), __LINE__);
-        ret = 1;
+    /* must not dead loop */
+    while (1) {
+        parent = clang_getCursorSemanticParent(parent);
+        type = clang_getCursorType(parent);
+        if (type.kind == CXCursor_FunctionDecl) {
+            scope = clang_getCursorDisplayName(parent);
+            p = strdup(clang_getCString(scope));
+            clang_disposeString(scope);
+            break;
+        } else if (clang_isTranslationUnit(parent.kind)) {
+            p = NULL;
+            break;
+        }
     }
-    clang_disposeString(name);
-    return ret;
+
+    return p;
+}
+
+/* used for query static var/func defined location in original source */
+struct orig_static_t {
+    const char *name;               /* static identifier */
+    CXSourceLocation *loc;          /* save its location*/
+    int is_var;                     /* var or func */
+    enum CXChildVisitResult ret;    /* sibling or recursively visit */
+};
+
+static enum CXChildVisitResult query_orig_static_loc(CXCursor cusr,
+                                    CXCursor parent, CXClientData data)
+{
+    struct orig_static_t *id = data;
+    if (id->is_var && (cusr.kind != CXCursor_VarDecl) ||
+        !id->is_var && (cusr.kind != CXCursor_FunctionDecl) ||
+        !clang_isCursorDefinition(cusr) ||
+        (clang_getCursorLinkage(cusr) != CXLinkage_Internal)) {
+        return id->ret;
+    }
+
+    CXString string = clang_getCursorSpelling(cusr);
+    const char *p = clang_getCString(string);
+    if (!strcmp(id->name, p)) {
+        *id->loc = clang_getCursorLocation(cusr);
+        clang_disposeString(string);
+        return CXChildVisit_Break;
+    }
+    clang_disposeString(string);
+    return id->ret;
+}
+
+/* return static var/func definition line number in original source */
+static int get_orig_lineno(const char *scope, const char *name,
+                            struct para_t *para, int is_var)
+{
+    CXSourceLocation loc = clang_getNullLocation();
+    int lineno;
+    struct orig_static_t id = { .loc = &loc };
+
+    CXCursor cursor = clang_getTranslationUnitCursor(para->old_tu);
+    if (scope) {
+        id.name = scope;
+        id.is_var = 0;
+        id.ret = CXChildVisit_Continue;
+        clang_visitChildren(cursor, query_orig_static_loc, &id);
+        /*
+         * Not found variable's containing function in original source.
+         * The variable and its function must be newly defined.
+         */
+        if (clang_equalLocations(loc, clang_getNullLocation()))
+            return 0;
+        cursor = clang_getCursor(para->old_tu, loc);
+        loc = clang_getNullLocation();
+        id.name = name;
+        id.is_var = 1;
+        id.ret = CXChildVisit_Recurse;
+        clang_visitChildren(cursor, query_orig_static_loc, &id);
+    } else {
+        id.name = name;
+        id.is_var = is_var;
+        id.ret = CXChildVisit_Continue;
+        clang_visitChildren(cursor, query_orig_static_loc, &id);
+    }
+
+    if (clang_equalLocations(loc, clang_getNullLocation()))
+        return 0;
+    clang_getSpellingLocation(loc, NULL, &lineno, NULL, NULL);
+    return lineno;
 }
 
 /*
- * Check a local is included(inlined) or not, or a new one
- * return 1 indicate need to recursively visit function's body,
+ * Check a local definition is included(inlined) or not, or a new one.
+ * Return 1 indicate need to recursively visit function's body,
  * -1 error, otherwise only need to visit function's arguments.
  *
  * Not support different compile units access different non-included
@@ -217,9 +297,32 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
 
     CXString string = clang_getCursorSpelling(cusr);
     const char *name = clang_getCString(string);
-    int ret = 0, pos;
+    char *scope = is_var ? get_var_scope(cusr) : NULL;
+    int orig_lineno;
+    int ret, pos;
 
-    pos = non_included(para, name, is_var);
+    ret = is_in_main_src(cusr);
+    if (!ret && is_var) {
+        fprintf(stderr, "ERROR: not support static variable %s"
+                                " defined in header\n", name);
+        ret = -1;
+        goto out;
+    }
+
+    if (ret)
+        orig_lineno = get_orig_lineno(scope, name, para, is_var);
+    /* header defined function or new var/func */
+    if (!ret || (orig_lineno == 0)) {
+        clang_CXCursorSet_insert(g_func_inlined, cusr);
+        if (ret)
+            log_debug("new local %s: %s\n", is_var ? "variable" : "function", name);
+        if (!is_var)
+            ret = 1;
+        goto out;
+    }
+
+    ret = 0;
+    pos = non_included(para, name, is_var, scope, orig_lineno);
     switch (pos) {
     case KLPSYM_ERROR:
         ret = -1;
@@ -237,7 +340,7 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
          *
          * Here still not detected duplicate names, like __already_done.123?
          */
-        if (is_var && is_func_scope(cusr)) {
+        if (is_var && scope) {
             ret = -1;
             break;
         }
@@ -250,7 +353,10 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
         break;
     }
     log_debug("check local: %s, result: %d\n", name, pos);
+
+out:
     clang_disposeString(string);
+    free(scope);
     return ret;
 }
 
@@ -403,7 +509,8 @@ static enum CXChildVisitResult find_used(CXCursor cusr,
         clang_CXCursorSet_insert(g_func_inlined, cusr);
         /* verify the patched func and its position */
         if (clang_Cursor_getStorageClass(cusr) == CX_SC_Static) {
-            para->pos[i] = non_included(para, p, 0);
+            para->pos[i] = non_included(para, p, 0, NULL,
+                                    get_orig_lineno(NULL, p, para, 0));
             if (para->pos[i] < 0) { /* KLPSYM_NOT_FOUND or KLPSYM_ERROR */
                 fprintf(stderr, "ERROR: finding %s:%s\n", para->src, p);
                 ret = CXChildVisit_Break;
@@ -755,8 +862,31 @@ static char *fill_last_compiler_opts(char *root, char *src)
     return f;
 }
 
-static void cleanup_ast(CXIndex index, CXTranslationUnit unit)
+/*
+ * We have two translation units at the same time.
+ * One for patched source, the main part, e.g. index, unit, g_...
+ * Another for original source, temporarily used, e.g. para->old_...
+ */
+static int parse_ast(char *src, const char *args[], CXIndex *index,
+                                    CXTranslationUnit *unit)
 {
+    *index = clang_createIndex(0, 1);
+    *unit = clang_parseTranslationUnit(*index, src, args, COMPILER_OPTS, NULL,
+                     0, CXTranslationUnit_DetailedPreprocessingRecord |
+						CXTranslationUnit_KeepGoing |
+						CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles);
+    if (*unit == NULL) {
+        fprintf(stderr, "ERROR: unable to parse %s\n", src);
+        clang_disposeIndex(*index);
+        return 1;
+    }
+    return 0;
+}
+
+static void cleanup_ast(CXIndex index, CXTranslationUnit unit, struct para_t *para)
+{
+    clang_disposeTranslationUnit(para->old_tu);
+    clang_disposeIndex(para->old_idx);
     clang_disposeCXCursorSet(g_visited);
     clang_disposeCXCursorSet(g_non_exported);
     clang_disposeCXCursorSet(g_type_def);
@@ -803,6 +933,7 @@ int main(int argc, char *argv[])
     CXCursor cursor;
     char *f;
     int ret = EXIT_SUCCESS;
+    char buf[MAX_FILE_NAME];
 
     para.src_root = patch.src_root;
     para.debug_root = patch.debug_root;
@@ -822,13 +953,13 @@ int main(int argc, char *argv[])
                 ret = EXIT_FAILURE;
                 goto out;
             }
-            index = clang_createIndex(0, 1);
-            unit = clang_parseTranslationUnit(index, f, args, COMPILER_OPTS, NULL,
-                         0, CXTranslationUnit_DetailedPreprocessingRecord |
-						    CXTranslationUnit_KeepGoing |
-							CXTranslationUnit_IgnoreNonErrorsFromIncludedFiles);
-            if (unit == NULL) {
-                fprintf(stderr, "ERROR: unable to parse %s\n",para.src);
+            if (parse_ast(f, args, &index, &unit)) {    /* patched */
+                ret = EXIT_FAILURE;
+                goto out;
+            }
+            snprintf(buf, MAX_FILE_NAME, "%s/%s", para.src_root, para.src);
+            if (parse_ast(buf, args, &para.old_idx, &para.old_tu)) {/* original */
+                clang_disposeTranslationUnit(unit);
                 clang_disposeIndex(index);
                 ret = EXIT_FAILURE;
                 goto out;
@@ -849,21 +980,21 @@ int main(int argc, char *argv[])
                 para.funcs[k] = patch.mods[i].srcs[j].funcs[k];
             para.pos = patch.mods[i].srcs[j].pos;
             if (clang_visitChildren(cursor, find_used, &para)) {
-                cleanup_ast(index, unit);
+                cleanup_ast(index, unit, &para);
                 ret = EXIT_FAILURE;
                 goto out;
             }
 
             /* output klp source */
             if ((para.fout = open_output_file(unit, f)) == NULL) {
-                cleanup_ast(index, unit);
+                cleanup_ast(index, unit, &para);
                 ret = EXIT_FAILURE;
                 goto out;
             }
             (void)clang_visitChildren(cursor, output_cursors, &para);
             fclose(para.fout);
 
-            cleanup_ast(index, unit);
+            cleanup_ast(index, unit, &para);
         }
         end_mod_sympos(&para, patch.mods[i].src_count, 0);
     }

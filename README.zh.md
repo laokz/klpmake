@@ -68,7 +68,8 @@ source-tree-root是源码树根目录，debuginfo-tree-root是包含debuginfo文
 
 社区有对DWARF信息可靠性的担心，这里列出klpmake用到的：
 - 定位函数符号：DW_TAG_compile_unit的DW_AT_name、DW_AT_low_pc、DW_AT_high_pc、DW_AT_ranges
-- 定位变量符号：DW_TAG_variable的DW_AT_name、DW_AT_location、DW_AT_const_value(未来）、DW_AT_decl_line（未来）
+- 定位函数符号（当前仅作info用）：DW_TAG_subprogram的DW_AT_name、DW_AT_low_pc、DW_AT_decl_line
+- 定位变量符号：DW_TAG_variable的DW_AT_name、DW_AT_location、DW_AT_decl_line（当前仅作info用）
 
 工具是在riscv64平台上开发和测试的，刚刚迈出一小步...
 

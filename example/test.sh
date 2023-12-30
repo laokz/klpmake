@@ -14,17 +14,17 @@ case $(uname -m) in
 	aarch64)	tests=(roinit gmemtest memi netlink syscall)
 				expect_klpsyms=(3 3 11 0 1)
 				expect_check=("" "" "cat /proc/meminfo|grep kpatch" "" "uname|grep kpatch")
-				cmd="../../klpmake -b /usr/lib/debug/lib/modules/6.4.0-10.1.0.20.oe2309.aarch64 -s /usr/src/linux-6.4.0-10.1.0.20.oe2309.aarch64"
+				cmd="../../klpmake -b /usr/lib/debug/lib/modules/6.4.0-10.1.0.20.oe2309.aarch64 -s /usr/src/linux-6.4.0-10.1.0.20.oe2309.aarch64 -d"
 				;;
 	riscv64)	tests=(roinit memi netlink syscall)
 				expect_klpsyms=(3 10 0 1)
 				expect_check=("" "cat /proc/meminfo|grep kpatch" "" "uname|grep kpatch")
-				cmd="../../klpmake -s /var/tmp/build-root/standard_riscv64-riscv64/home/abuild/rpmbuild/BUILD/kernel-6.4.0/linux-6.4.0-10.1.0.21.oe2309.riscv64 -b /var/tmp/build-root/standard_riscv64-riscv64/home/abuild/rpmbuild/BUILD/kernel-6.4.0/linux-6.4.0-10.1.0.21.oe2309.riscv64"
+				cmd="../../klpmake -s /var/tmp/build-root/standard_riscv64-riscv64/home/abuild/rpmbuild/BUILD/kernel-6.4.0/linux-6.4.0-10.1.0.21.oe2309.riscv64 -b /var/tmp/build-root/standard_riscv64-riscv64/home/abuild/rpmbuild/BUILD/kernel-6.4.0/linux-6.4.0-10.1.0.21.oe2309.riscv64 -d"
 				;;
 	x86_64)		tests=(roinit gmemtest memi netlink syscall)
 				expect_klpsyms=(3 3 10 0 2)
 				expect_check=("" "" "cat /proc/meminfo|grep kpatch" "" "uname|grep kpatch")
-				cmd="../../klpmake -s /usr/src/linux-6.4.0-10.1.0.20.oe2309.x86_64 -b /usr/lib/debug/lib/modules/6.4.0-10.1.0.20.oe2309.x86_64"
+				cmd="../../klpmake -s /usr/src/linux-6.4.0-10.1.0.20.oe2309.x86_64 -b /usr/lib/debug/lib/modules/6.4.0-10.1.0.20.oe2309.x86_64 -d"
 				;;
 	*)			echo "ERROR: not support architecture"
 				exit 1

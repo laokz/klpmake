@@ -69,7 +69,8 @@ See [example](example/readme.md).
 
 There is concern about the reliability of DWARF information. Here list klpmake used:
 - locating function symbol: DW_TAG_compile_unit DW_AT_name, DW_AT_low_pc, DW_AT_high_pc, DW_AT_ranges
-- locating variable symbol: DW_TAG_variable DW_AT_name, DW_AT_location, DW_AT_const_value(future), DW_AT_decl_line(future)
+- locating function symbol(only for info now): DW_TAG_subprogram DW_AT_name, DW_AT_low_pc, DW_AT_decl_line
+- locating variable symbol: DW_TAG_variable DW_AT_name, DW_AT_location,  DW_AT_decl_line(only for info now )
 
 The tool is developed and test on riscv64, and it's just on the first step...
 

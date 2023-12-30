@@ -28,7 +28,7 @@
 #define MAX_MODS 4
 #define MAX_SRCS 4
 #define MAX_MOD_NAME 56
-#define MAX_FILE_NAME 128
+#define MAX_FILE_NAME 256
 #define MAX_FUNC_NAME 64
 
 struct src_t {
@@ -61,6 +61,8 @@ struct para_t {
     char *funcs[MAX_PATCHED_FUNCS_PER_SRC];
     int *pos;    /* save funcs position */
     FILE *fout;    /* write klp source */
+    CXIndex old_idx;
+    CXTranslationUnit old_tu;   /* to precisely locate a static symbol */
 
     /* for every patched module */
     unsigned long koffset;  /* KASLR offset or module base */
@@ -97,11 +99,18 @@ void end_mod_sympos(struct para_t *para, int src_count, int end_all);
 /*
  * Not-found symbols in kallsyms.
  * For globals, means they are new.
- * For locals(static), means they are new func/var or inlined functions.
+ * For locals(static), means they are inlined functions.
  */
 #define KLPSYM_NOT_FOUND -42
 int non_exported(struct para_t *para, const char *name);
-int non_included(struct para_t *para, const char *name, int is_var);
+/*
+ * 'scope', where 'name' defined. For function and file scope variable,
+ * scope is NULL. For static variable defined in function, scope is the
+ * function's name.
+ * 'orig_lineno', line number where 'name' defined in the original source.
+ */
+int non_included(struct para_t *para, const char *name, int is_var,
+                                const char *scope, int orig_lineno);
 
 int parse_arg_and_patch(int argc, char *argv[], struct patch_t *patch);
 void write_main_src_head(FILE *fp);

@@ -132,58 +132,154 @@ static Dwarf_Addr get_location_addr(Dwarf_Attribute attr)
     return opd1;
 }
 
-static Dwarf_Addr get_var_addr(struct para_t *para, const char *var)
+/* walkthrough current compile unit's direct children to find the name's die */
+static int get_lvl1_die(struct para_t *para, const char *name, int is_var,
+                                                        Dwarf_Die *die)
 {
     Dwarf_Die kid, d;
     Dwarf_Error err;
-    Dwarf_Addr addr = KLPSYM_ERROR;
     int ret;
 
-    /* walkthrough current compile unit's all direct children */
     E(dwarf_child(para->cu[para->src_idx], &kid, &err), "");
     while(dwarf_siblingof_b(para->dbg, kid, 1, &d, &err) == DW_DLV_OK){
         Dwarf_Half tag;
         char *diename;
         E(dwarf_tag(d, &tag, &err), "");
-        if (tag != DW_TAG_variable) {
+        if (is_var && (tag != DW_TAG_variable) ||
+            !is_var && (tag != DW_TAG_subprogram)) {
             dwarf_dealloc_die(kid);
             kid = d;
             continue;
         }
         ret = dwarf_diename(d, &diename, &err);
         if (ret == DW_DLV_ERROR) {
-            fprintf(stderr, "ERROR: %s:%d %s\n", __func__, __LINE__,
-                                                dwarf_errmsg(err));
+            dwarf_dealloc_die(d);
             goto out;
-        /* DW_TAG_variable not always has DW_AT_name attribute, e.g. anonymous */
-        } else if ((ret == DW_DLV_NO_ENTRY) || strcmp(diename, var)) {
+        /*
+         * DW_TAG_variable not always has DW_AT_name attribute, its
+         * name might be at another tag's DW_AT_specification.
+         * Mostly this is a global variable???
+         *
+         * DW_TAG_subprogram always has a DW_AT_name.
+         */
+        } else if ((ret == DW_DLV_NO_ENTRY) || strcmp(diename, name)) {
             dwarf_dealloc_die(kid);
             kid = d;
             continue;
         }
 
-        Dwarf_Signed atcount;
-        Dwarf_Attribute *atlist;
-        E(dwarf_attrlist(d, &atlist, &atcount, &err), "");
-        for (int i = 0; i < atcount; ++i) {
-            Dwarf_Half attrnum = 0;
-            const char *attrname = 0;
-            E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
-            if (attrnum == DW_AT_location)
-                addr = get_location_addr(atlist[i]);
-                /* without break to allow dealloc all attrs? */
-            dwarf_dealloc_attribute(atlist[i]);
-        }
-        dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
-        dwarf_dealloc_die(d);
-        break;
+        dwarf_dealloc_die(kid);
+        *die = d;
+        return 0;
     }
 
-    log_debug("search CU variable %s's addr=0x%lx\n", var, addr);
-
 out:
+    fprintf(stderr, "ERROR: %s:%d %s\n", __func__, __LINE__, dwarf_errmsg(err));
     dwarf_dealloc_die(kid);
-    return addr;
+    return KLPSYM_ERROR;
+}
+
+/*
+ * Recursively walkthrough parent die's all children to find the
+ * name's die.
+ * Take all DW_DLV_ERROR, DW_DLV_NO_ENTRY as not found.
+ */
+static int get_recursive_die(struct para_t *para, Dwarf_Die parent,
+                                    const char *name, Dwarf_Die *die)
+{
+    Dwarf_Die kid, d;
+    Dwarf_Half tag;
+    char *diename;
+    Dwarf_Error err;
+    int ret0, ret1;
+
+    if (dwarf_child(parent, &d, &err) != DW_DLV_OK) {}
+        return KLPSYM_ERROR;
+    kid = NULL;
+    do {
+        if (kid)
+            dwarf_dealloc_die(kid);
+        ret0 = dwarf_tag(d, &tag, &err);
+        ret1 = dwarf_diename(d, &diename, &err);
+        if ((ret0 == DW_DLV_OK) && (ret1 == DW_DLV_OK) &&
+            (tag == DW_TAG_variable) && !strcmp(diename, name)) {
+            *die = d;
+            return 0;
+        } else {
+            if (get_recursive_die(para, d, name, die) == 0) {
+                dwarf_dealloc_die(d);
+                return 0;
+            }
+        }
+        kid = d;
+    } while(dwarf_siblingof_b(para->dbg, kid, 1, &d, &err) == DW_DLV_OK);
+
+    dwarf_dealloc_die(kid);
+    return KLPSYM_ERROR;
+}
+
+static int get_addr(struct para_t *para, const char *name,
+    const char *scope, int orig_lineno, int is_var, unsigned long *address)
+{
+    Dwarf_Die d;
+    Dwarf_Error err;
+    int ret;
+
+    /* find the die with the specified 'name' */
+    if (scope) {
+        if (get_lvl1_die(para, scope, 0, &d))
+            return KLPSYM_ERROR;
+        if (get_recursive_die(para, d, name, &d))
+            return KLPSYM_ERROR;
+    } else {
+        if (get_lvl1_die(para, name, is_var, &d))
+            return KLPSYM_ERROR;
+    }
+
+    /* find its address and line number */
+    Dwarf_Signed atcount;
+    Dwarf_Attribute *atlist;
+    Dwarf_Addr addr = KLPSYM_ERROR;
+    Dwarf_Unsigned linenum = 0;
+    E(dwarf_attrlist(d, &atlist, &atcount, &err), "");
+    for (int i = 0; i < atcount; ++i) {
+        Dwarf_Half attrnum = 0;
+        const char *attrname = 0;
+        E(dwarf_whatattr(atlist[i], &attrnum, &err), "");
+        if (is_var && (attrnum == DW_AT_location)) {
+            addr = get_location_addr(atlist[i]);
+        } else if (!is_var && (attrnum == DW_AT_low_pc)) {
+            ret = dwarf_formaddr(atlist[i], &addr, &err);
+            if (ret == DW_DLV_ERROR) {
+                fprintf(stderr, "ERROR: %s:%d %s\n", __func__, __LINE__,
+                                                dwarf_errmsg(err));
+            } if (ret == DW_DLV_NO_ENTRY) {
+                /*
+                 * The name is matched, but there is no lowpc, that means
+                 * this is an inlined function from header.
+                 * Give it a legal null address.
+                 */
+                addr = (Dwarf_Addr)NULL;
+            }
+        } else if (attrnum == DW_AT_decl_line) {
+            E(dwarf_formudata(atlist[i], &linenum, &err), "");
+        }
+        /* without break to allow dealloc all attrs? */
+        dwarf_dealloc_attribute(atlist[i]);
+    }
+    dwarf_dealloc(para->dbg, atlist, DW_DLA_LIST);
+
+    log_debug("search %s scope %s %s's addr=0x%lx original line no.=%d\n",
+                scope ? scope : "file", is_var ? "variable" : "function",
+                name, addr, orig_lineno);
+    if (orig_lineno != linenum)
+        fprintf(stderr, "WARNING: %s %s DWARF line number %d not equal to"
+            " %d as in original source\n", is_var ? "variable" : "function",
+            name, linenum, orig_lineno);
+
+    dwarf_dealloc_die(d);
+    *address = (unsigned long)addr;
+    return 0;
 }
 
 /* current compile unit .text address ranges array */
@@ -284,11 +380,12 @@ static int query_func_in_ranges(struct para_t *para, Dwarf_Addr addr)
     return 0;
 }
 
-int non_included(struct para_t *para, const char *name, int is_var)
+int non_included(struct para_t *para, const char *name, int is_var,
+                                const char *scope, int orig_lineno)
 {
     char buf[KALLSYMS_LINE_LEN], sym[KALLSYMS_LINE_LEN], mod[KALLSYMS_LINE_LEN];
     unsigned long addr;
-    int count, pos, found;
+    int count, pos, found, ret;
     char t;
 
     pos = KLPSYM_NOT_FOUND;
@@ -309,22 +406,28 @@ int non_included(struct para_t *para, const char *name, int is_var)
         }
 
         addr -= para->koffset;
-        if (is_var) {
-            unsigned long var_addr = get_var_addr(para, name);
-            if (var_addr == KLPSYM_ERROR)
-                return KLPSYM_ERROR;
-            if (addr == var_addr)
+        unsigned long _addr;
+        ret = get_addr(para, name, scope, orig_lineno, is_var, &_addr);
+        if (ret == KLPSYM_ERROR)
+            return KLPSYM_ERROR;
+        if (is_var) {   /* for variable, we use get_addr to match */
+            if (addr == _addr)
                 pos = count;
-        } else {
+        } else {    /* for function, we use get_addr only for info */
             if (para->arange)   /* the module has no .debug_ranges */
                 found = query_func_in_aranges(para, addr);
             else
                 found = query_func_in_ranges(para, addr);
 
-            if (found < 0)
+            if (found < 0) {
                 return KLPSYM_ERROR;
-            else if (found)
+            } else if (found) {
                 pos = count;
+                if (addr != _addr) {
+                    fprintf(stderr, "WARNING: function %s DWARF address 0x%lx"
+                    " not equal to 0x%lx as in kallsyms\n", name, _addr, addr);
+                }
+            }
         }
         count++;
     }
