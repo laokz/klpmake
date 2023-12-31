@@ -302,15 +302,17 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
     int ret, pos;
 
     ret = is_in_main_src(cusr);
-    if (!ret && is_var) {
-        fprintf(stderr, "ERROR: not support static variable %s"
-                                " defined in header\n", name);
-        ret = -1;
+    if (ret)
+        orig_lineno = get_orig_lineno(scope, name, para, is_var);
+    if (!ret && is_var ||           /* static variable defined in headers */
+         ret && is_var && scope && orig_lineno) {           /* in function */
+        fprintf(stderr, "WARNING: static variable %s defined in header or"
+                    " in function, will be treated as new variable\n", name);
+        /* they will be auto-output along with include or function */
+        ret = 0;
         goto out;
     }
 
-    if (ret)
-        orig_lineno = get_orig_lineno(scope, name, para, is_var);
     /* header defined function or new var/func */
     if (!ret || (orig_lineno == 0)) {
         clang_CXCursorSet_insert(g_func_inlined, cusr);

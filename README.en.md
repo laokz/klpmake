@@ -58,7 +58,7 @@ See [example](example/readme.md).
 - depend on strict matching in .patch when qeurying changed functions（klpmake）
 - only support one .patch file（klpmake、klpsrc）
 - not support ftrace-based livepatch condition detection（klpmake、klpsrc）
-- not support livepatch source have original func-scope static variable（klpsrc）
+- static variable defined in headers or in functions will be treated as new variable（klpsrc）
 - not support patch variadic function（klpsrc）
 - kernel/module binary must have DWARF4 information, have .debug_info and, .debug_aranges or .debug_ranges section（klpsrc）
 - not support static variables duplicate name or duplicate with extern varaible in same source（klpsrc）
