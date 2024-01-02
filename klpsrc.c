@@ -116,17 +116,22 @@ static inline int is_visited(CXCursor cusr)
     return clang_CXCursorSet_insert(g_visited, cusr) == 0;
 }
 
+static int is_patched_func_str(char *name, struct para_t *para)
+{
+    for (int i = 0; i < para->func_count; i++)
+        if (!strcmp(name, para->funcs[i]))
+            return 1;
+
+    return 0;
+}
+
 static int is_patched_func(CXCursor cusr, struct para_t *para)
 {
-    int ret = 0;
+    int ret;
     CXString string = clang_getCursorSpelling(cusr);
     const char *p = clang_getCString(string);
 
-    for (int i = 0; i < para->func_count; i++)
-        if (!strcmp(p, para->funcs[i])) {
-            ret = 1;
-            break;
-        }
+    ret = is_patched_func_str(name, para);
 
     clang_disposeString(string);
     return ret;
@@ -331,22 +336,35 @@ static int check_local(CXCursor cusr, struct para_t *para, int is_var)
         break;
 
     case KLPSYM_NOT_FOUND:
+        /*
+         * Static variable defined in inlined function should
+         * be kept as KLPSYMs because they are not changed
+         * intentionally by the user(for patched function it
+         * be treated as new now)???
+         *
+         * They are mostly KLPSYM_NOT_FOUND due to gcc mangling
+         * their name to name.123.
+         *
+         * That is, if the 'scope' -- the inlined function which
+         * already been in g_func_inlined, is not a patched func,
+         * we should not put the static variable in this set again.
+         * Instead, we should put them in a specific set, and in
+         * later output, replace their definitions to extern
+         * declarations.
+         */
+        if (scope && !is_patched_func_str(scope, para)) {
+            fprintf(stderr, "ERROR: not support function scope static definition"
+                                " %s:%s\n", scope, name);
+            ret = -1;
+            break;
+        }
+
         clang_CXCursorSet_insert(g_func_inlined, cusr);
         if (!is_var)
             ret = 1;
         break;
 
     default:    /* >= 0, position */
-        /*
-         * Not support non-included static variable defined inner function.
-         *
-         * Here still not detected duplicate names, like __already_done.123?
-         */
-        if (is_var && scope) {
-            ret = -1;
-            break;
-        }
-
         output_klpsym_list(name, pos, para->mod);
         if (is_var)
             clang_CXCursorSet_insert(g_type_def, cusr);
